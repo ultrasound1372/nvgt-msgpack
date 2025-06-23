@@ -1,26 +1,26 @@
 /* msgpack.nvgt - fully-featured pure-NVGT msgpack serialization/deserialization library
-* Copyright (C) 2024 Colton Hill
-*
-*  This software is provided 'as-is', without any express or implied
-*  warranty.  In no event will the authors be held liable for any damages
-*  arising from the use of this software.
-*
-*  Permission is granted to anyone to use this software for any purpose,
-*  including commercial applications, and to alter it and redistribute it
-*  freely, subject to the following restrictions:
-*
-*  1. The origin of this software must not be misrepresented; you must not
-*    claim that you wrote the original software. If you use this software
-*    in a product, an acknowledgment in the product documentation would be
-*    appreciated but is not required.
-*  2. Altered source versions must be plainly marked as such, and must not be
-*    misrepresented as being the original software.
-*  3. This notice may not be removed or altered from any source distribution.
+ * Copyright (C) 2024 Colton Hill
+ *
+ *  This software is provided 'as-is', without any express or implied
+ *  warranty.  In no event will the authors be held liable for any damages
+ *  arising from the use of this software.
+ *
+ *  Permission is granted to anyone to use this software for any purpose,
+ *  including commercial applications, and to alter it and redistribute it
+ *  freely, subject to the following restrictions:
+ *
+ *  1. The origin of this software must not be misrepresented; you must not
+ *    claim that you wrote the original software. If you use this software
+ *    in a product, an acknowledgment in the product documentation would be
+ *    appreciated but is not required.
+ *  2. Altered source versions must be plainly marked as such, and must not be
+ *    misrepresented as being the original software.
+ *  3. This notice may not be removed or altered from any source distribution.
 */
 
 /* type enumeration
-* the generic type of each value, also called a format family
-* maps to families of formats and corresponding primitive types, depending on range of values
+ * the generic type of each value, also called a format family
+ * maps to families of formats and corresponding primitive types, depending on range of values
 */
 enum mp_type {
 	MPT_UNDETERMINED = -1,
@@ -36,8 +36,8 @@ enum mp_type {
 }
 
 /* exceptions
-* these strings represent common exceptions thrown by this library and can be matched against directly for most cases.
-* Specific conditions may result in other exceptions, however, and in that case the only commonality is that they all begin with "msgpack "
+ * these strings represent common exceptions thrown by this library and can be matched against directly for most cases.
+ * Specific conditions may result in other exceptions, however, and in that case the only commonality is that they all begin with "msgpack "
 */
 const string MP_TYPE_MISMATCH_EXCEPTION = "msgpack type mismatch";
 const string MP_INVALID_KEY_TYPE_EXCEPTION = "msgpack invalid key type";
@@ -45,9 +45,9 @@ const string MP_RECURSION_LIMIT_EXCEPTION = "msgpack maximum recursion depth exc
 const string MP_LARGE_VALUE_EXCEPTION = "msgpack value too large to encode";
 
 /* detailed format enumeration
-* values in this enum are taken from the starting byte of each format, or the lowest such if a range is possible due to bitfields
-* this allows easy comparison with actual bytes against named constants for easier readability
-* values named and arranged as presented in the table of formats from the spec
+ * values in this enum are taken from the starting byte of each format, or the lowest such if a range is possible due to bitfields
+ * this allows easy comparison with actual bytes against named constants for easier readability
+ * values named and arranged as presented in the table of formats from the spec
 */
 enum mp_format {
 	MPF_UNDETERMINED = -1,
@@ -91,12 +91,12 @@ enum mp_format {
 }
 
 /* count enumeration
-* potential argument lengths, telling us how many bytes are in a length/count indicator or else how many bytes make up the value
-* If most significant bit is set, indicates a constant width stored in the type information itself
-* if most significant bit is clear, indicates the number of bytes to read for a length indicator
-* special case: 0 is no further bytes to read (this byte alone specifies the full data), 0x80 is read some number of bits in this byte
-* the former is used in literals like booleans and nil,
-* whereas the latter is used in formats with fix in the name, where some number of the least significant bits form the count as a small value
+ * potential argument lengths, telling us how many bytes are in a length/count indicator or else how many bytes make up the value
+ * If most significant bit is set, indicates a constant width stored in the type information itself
+ * if most significant bit is clear, indicates the number of bytes to read for a length indicator
+ * special case: 0 is no further bytes to read (this byte alone specifies the full data), 0x80 is read some number of bits in this byte
+ * the former is used in literals like booleans and nil,
+ * whereas the latter is used in formats with fix in the name, where some number of the least significant bits form the count as a small value
 */
 enum mp_count {
 	MPC_UNDETERMINED = -1,
@@ -113,9 +113,9 @@ enum mp_count {
 }
 
 /* count type enumeration
-* indicates whether a count, specified by the above enumeration, is counting bytes or items
-* this distinction is important when working with structures like arrays and maps
-* where the count is a number of elements to read, which can span any number of bytes
+ * indicates whether a count, specified by the above enumeration, is counting bytes or items
+ * this distinction is important when working with structures like arrays and maps
+ * where the count is a number of elements to read, which can span any number of bytes
 */
 enum mp_count_type {
 	MPCT_UNDETERMINED = -1,
@@ -127,11 +127,11 @@ enum mp_count_type {
 }
 
 /* info type
-* enumeration to be used for indexes into a mapping array
-* which gives information about a given start byte
-* this info contains the format family and specific format, as well as the count length and type
-* this map array shall be a 256x4 array, map every possible start byte to such information
-* due to ranges, this needs to be prepared by code, and is done on global initialization
+ * enumeration to be used for indexes into a mapping array
+ * which gives information about a given start byte
+ * this info contains the format family and specific format, as well as the count length and type
+ * this map array shall be a 256x4 array, map every possible start byte to such information
+ * due to ranges, this needs to be prepared by code, and is done on global initialization
 */
 enum mp_info_type {
 	MPI_FORMAT = 0,
@@ -176,27 +176,21 @@ const int[][] mp_prepare_infomap() {
 	tinfomap[MPF_ARRAY32] = {MPF_ARRAY32, MPT_ARRAY, MPCT_ITEMS, MPC_32BIT};
 	tinfomap[MPF_MAP16] = {MPF_MAP16, MPT_MAP, MPCT_ITEMS2X, MPC_16BIT};
 	tinfomap[MPF_MAP32] = {MPF_MAP32, MPT_MAP, MPCT_ITEMS2X, MPC_32BIT};
-
 	for (uint i = MPF_POS_FIXINT; i <= 0x7f; i++) {
 		tinfomap[i] = {MPF_POS_FIXINT, MPT_INT, MPCT_VALUE, MPC_SUBFIELD};
 	}
-
 	for (uint i = MPF_FIXMAP; i <= 0x8F; i++) {
 		tinfomap[i] = {MPF_FIXMAP, MPT_MAP, MPCT_ITEMS2X, MPC_SUBFIELD};
 	}
-
 	for (uint i = MPF_FIXARRAY; i <= 0x9F; i++) {
 		tinfomap[i] = {MPF_FIXARRAY, MPT_ARRAY, MPCT_ITEMS, MPC_SUBFIELD};
 	}
-
 	for (uint i = MPF_FIXSTR; i <= 0xBF; i++) {
 		tinfomap[i] = {MPF_FIXSTR, MPT_STRING, MPCT_BYTES, MPC_SUBFIELD};
 	}
-
 	for (uint i = 0xE0; i <= 0xFF; i++) {
 		tinfomap[i] = {MPF_NEG_FIXINT, MPT_INT, MPCT_VALUE, MPC_SUBFIELD};
 	}
-
 	return tinfomap;
 }
 
@@ -251,7 +245,6 @@ class mp_value {
 						case MPF_UINT64:
 							return 0;
 							break;
-
 						case MPF_NEG_FIXINT: // actually stored as int8
 						case MPF_INT8:
 						case MPF_INT16:
@@ -259,7 +252,6 @@ class mp_value {
 						case MPF_INT64:
 							return 1;
 							break;
-
 						default:
 							return -1;
 							break;
@@ -300,7 +292,6 @@ class mp_value {
 	const bool get_bool() const {
 		if (this.itype == MPT_BOOLEAN)
 			return this.iformat == MPF_TRUE;
-
 		throw(MP_TYPE_MISMATCH_EXCEPTION);
 		return false;
 	}
@@ -444,7 +435,6 @@ class mp_value {
 		return 0;
 	}
 
-	// this can't be mp_value@[]@, else you get an immutable handle, and you actually want to modify it
 	mp_value@[]@ get_array(bool needs_throw = true) const {
 		if (this.itype == MPT_ARRAY) {
 			mp_value@[]@ ret;
@@ -452,7 +442,6 @@ class mp_value {
 			return ret;
 		}
 		if (needs_throw) throw(MP_TYPE_MISMATCH_EXCEPTION);
-
 		return null;
 	}
 
@@ -463,7 +452,6 @@ class mp_value {
 			return ret;
 		}
 		if (needs_throw) throw(MP_TYPE_MISMATCH_EXCEPTION);
-
 		return null;
 	}
 
@@ -474,7 +462,6 @@ class mp_value {
 			return ret;
 		}
 		if (needs_throw) throw(MP_TYPE_MISMATCH_EXCEPTION);
-
 		return null;
 	}
 
@@ -625,34 +612,27 @@ class mp_value {
 			case MPT_BIN: // fall-through, both are equivalent here
 				return this.get_string(); // the simple case, it's already a string
 				break;
-
 			case MPT_BOOLEAN:
 				return this.get_bool(); // true or false
 				break;
-
 			case MPT_NIL:
 				return "null"; // string formatting of nil consistent with the lang
 				break;
-
 			case MPT_FLOAT:
 				return this.get_double(); // float to double doesn't lose precision and should print the equivalent value
 				break;
-
 			case MPT_INT: // we have to be careful with this one because conversions might give incorrect values if the wrong sign
 				switch (this.signed) {
 					case 0:
 						return this.get_uint64(); // 0-extended to the left, value is equivalent
 						break;
-
 					case 1:
 						return this.get_int64(); // sign-extended to the left, value is equivalent
 						break;
-
 					default:
 						throw("msgpack improper format condition"); // constructing this value should also have caused an assertion error
 				}
 				break;
-
 			default:
 				break; // out to throw, no simple conversion matched
 		}
@@ -749,7 +729,6 @@ class mp_value {
 	// store strings as either text or bin, depending on the value of is_bin
 	mp_value(const string &in v, bool is_bin = false) {
 		if (v.length() > 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-
 		int format = 0;
 		uint len = v.length();
 		if (!is_bin) {
@@ -770,7 +749,6 @@ class mp_value {
 	mp_value(mp_value@[] & v) {
 		// ref not handle so can't be null
 		if (v.length() > 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-
 		int format = 0;
 		uint len = v.length();
 		if (len <= 0x0F) format = MPF_FIXARRAY;
@@ -792,7 +770,6 @@ class mp_value {
 
 	mp_value(mp_ext& v) {
 		if (v.data.length() >= 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-
 		int format = 0;
 		uint len = v.data.length();
 		if (len == 1) format = MPF_FIXEXT1;
@@ -847,7 +824,6 @@ class mp_value {
 	bool opEquals(mp_value@ other) const {
 		if (other is null) return false; // no populated value can be equal to the null handle
 		if (this is other) return true; // trivial
-
 		if (this.itype == other.type) {
 			// no longer compares precisely on format, as slightly different msgpack which amounts to the same could invalidate this
 			// especially noteable for float/double, which may or may not be shrunken for efficiency
@@ -856,60 +832,50 @@ class mp_value {
 				case MPT_NIL:
 					return true; // nil is always equal to itself
 					break;
-
 				case MPT_BOOLEAN:
 					return this.get_bool() == other.get_bool();
 					break;
-
 				case MPT_FLOAT:
 					return this.get_double() == other.get_double();
 					break;
-
 				// note that because of the above, a string and bin will never compare equal, even if the contents are the same!
 				// this is by design due to msgpack's distinction of the two
 				case MPT_STRING:
 				case MPT_BIN:
 					return this.get_string() == other.get_string();
 					break;
-
 				case MPT_EXT: {
 					mp_ext@ thisext = this.get_ext();
 					mp_ext@ otherext = other.get_ext();
 					return thisext == otherext;
 				}
 				break;
-
 				case MPT_ARRAY: {
 					mp_value@[]@ thisarray = this.get_array();
 					mp_value@[]@ otherarray = other.get_array();
 					return thisarray == otherarray;
 				}
 				break;
-
 				case MPT_MAP: {
 					mp_map@ thismap = this.get_map();
 					mp_map@ othermap = other.get_map();
 					return thismap == othermap;
 				}
 				break;
-
 				case MPT_INT:
 					// distinguish based on signed and unsigned as elsewhere
-					if(this.signed != other.signed) return false; // equality here is not properly defined
+					if (this.signed != other.signed) return false; // equality here is not properly defined
 					switch (this.signed) {
 						case 0:
 							return this.get_uint64() == other.get_uint64();
 							break;
-
 						case 1:
 							return this.get_int64() == other.get_int64();
 							break;
-
 						default:
 							return false;
 					}
 					break;
-
 				default:
 					return false;
 					break;
@@ -1023,7 +989,6 @@ class mp_timestamp {
 	mp_timestamp(mp_ext &in v) {
 		if (v.type != MP_EXT_TIMESTAMP)
 			throw(MP_TYPE_MISMATCH_EXCEPTION);
-
 		string data = v.data;
 		// deserialization procedure adapted from the spec
 		datastream ds(data, "", STREAM_BYTE_ORDER_NETWORK);
@@ -1053,7 +1018,6 @@ class mp_timestamp {
 	mp_timestamp(int64 seconds, uint nanoseconds) {
 		if (nanoseconds > 999999999)
 			throw("msgpack invalid timestamp, nanoseconds must be in the range 0..999999999");
-
 		this.secs = seconds;
 		this.nsecs = nanoseconds;
 	}
@@ -1203,7 +1167,6 @@ class mp_map {
 		mp_value@[][] ret;
 		string[]@ keys = idict.get_keys();
 		if (sort_keys) keys.sort_ascending();
-
 		ret.reserve(keys.length());
 		for (uint i = 0; i < keys.length(); i++) {
 			mp_value@ k = null, v = null;
@@ -1280,7 +1243,7 @@ class mp_map {
 	}
 
 	// to behave like dictionary, though, we will allow casting from int to float/double with allow_int_source
-	bool get(const string &in key, float &out outval) const {
+	bool get(const string &in key, float& out outval) const {
 		mp_value@ val = this.get(key);
 		if (val !is null && (val.type == MPT_FLOAT || val.type == MPT_INT)) {
 			outval = val.get_float(true);
@@ -1289,7 +1252,7 @@ class mp_map {
 		return false;
 	}
 
-	bool get(const string &in key, double &out outval) const {
+	bool get(const string &in key, double& out outval) const {
 		mp_value@ val = this.get(key);
 		if (val !is null && (val.type == MPT_FLOAT || val.type == MPT_INT)) {
 			outval = val.get_double(true);
@@ -1384,7 +1347,6 @@ class mp_map {
 	// this necessary for when your key is not type str
 	void set_pair(mp_value@ key, mp_value@ v) {
 		if (key is null) @key = mp_value(); // key must be non-null, but nil is a thing
-
 		const string keystring = string(key); // if this throws an exception, that's your fault!
 		// it would only throw one if you tried to set a key of type array, map or ext.
 		if (v is null) idict.set(keystring, @mp_value()); // nil
@@ -1542,7 +1504,6 @@ class mp_map {
 	bool opEquals(mp_map@ other) const {
 		if (other is null) return false; // same as value
 		if (this is other) return true; // trivial
-
 		// try a few shortcuts to bale out early before having to do full, deep comparison
 		if (this.get_size() == other.get_size()) {
 			if (this.get_size() == 0) {
@@ -1677,9 +1638,7 @@ class mp_decoder {
 	// not a valid operation if fixed_length was set!
 	bool push(const string &in data) {
 		if (fixed_length) return false; // if you tell me you provided all the data to begin with, don't go lying to me now
-
 		if (data.empty()) return state != MPDS_MORE_DATA && state != MPDS_END_DATA;
-
 		stream.write(data);
 		stream.rseek(stream.rpos); // hack to make available report the true number of bytes available after pushing
 		bool s = this.check_more_data_resolved();
@@ -1696,7 +1655,6 @@ class mp_decoder {
 					case MPDS_READY:
 						useprevstate = true;
 						break;
-
 					case MPDS_COUNT:
 						if (cur_count_type == MPCT_VALUE || cur_count_type == MPCT_BYTES) {
 							useprevstate = (stream.available >= (cur_count & 0x7F)); // we now have enough bytes, the &7F was to mask out constants indicated by the high bit
@@ -1704,23 +1662,19 @@ class mp_decoder {
 							useprevstate = true; // items, anymore data should be good but we can't know for certain if we have a full item yet
 						}
 						break;
-
 					case MPDS_EXT_TYPE:
 						useprevstate = (stream.available >= 1); // just need to read an int8
 						break;
-
 					case MPDS_CONTENT:
 						if (cur_count_type == MPCT_BYTES) {
 							useprevstate = (stream.available >= cur_count_argument); // cur_count_argument being how many bytes we need to read for the contents of a string
 						} else if (cur_count_type > MPCT_BYTES)
 							useprevstate = true;
 						break;
-
 					default:
 						break;
 				}
 			}
-
 			if (useprevstate) {
 				state = prev_state;
 				prev_state = MPDS_MORE_DATA;
@@ -1732,7 +1686,6 @@ class mp_decoder {
 			bool useprevstate = stream.available > 0;
 			if (useprevstate)
 				set_state(MPDS_READY);
-
 			return useprevstate;
 		}
 		return true; // you've got enough data anyway
@@ -1765,7 +1718,6 @@ class mp_decoder {
 	// only works once, getting the value causes the state to reset to receive the next one
 	mp_value@ get_value() {
 		if (state != MPDS_READ) return null; // there isn't a value for you to get
-
 		mp_value@ ret = cur_value;
 		reset_currents();
 		if (fixed_length && !nested && stream.available == 0) set_state(MPDS_END_DATA); // last value in the stream
@@ -1782,16 +1734,14 @@ class mp_decoder {
 			reset_currents();
 			if (fixed_length && !nested && stream.available == 0) set_state(MPDS_END_DATA); // last value in the stream
 			else set_state(MPDS_READY); // prepare to read the next one
-
 			return true;
 		}
 		return false;
 	}
 
-	mp_decoder_state read_format(int &out outformat = void) {
+	mp_decoder_state read_format(int& out outformat = void) {
 		if (state == MPDS_END_DATA) return state;
 		else if (state != MPDS_READY) return MPDS_INVALID_OPERATION; // invalid operation order!
-
 		if (stream.available < 1) {
 			set_state(!nested ? MPDS_END_DATA : MPDS_MORE_DATA); // a subdecoder can never have the state MPDS_END_DATA as the existence of a subdecoder depends on the parent needing to read complex contents.
 			// If we had hit the end, this would have happened on the parent, in which case it means we've consumed all data in the stream.
@@ -1816,19 +1766,16 @@ class mp_decoder {
 					set_currents(format, type, count_type, count);
 				}
 				break;
-
 				case MPT_BOOLEAN: {
 					@cur_value = mp_value(type, format, any(format == MPF_TRUE));
 					set_currents(format, type, count_type, count);
 				}
 				break;
-
 				default:
 					set_state(MPDS_INVALID);
 					outformat = MP_INVALID;
 					return state;
 			}
-
 			set_state(MPDS_READ);
 		} else if (count == MPC_SUBFIELD) {
 			// first, check for fixints, which are also stored in just this byte
@@ -1840,7 +1787,6 @@ class mp_decoder {
 					set_state(MPDS_READ);
 				}
 				break;
-
 				case MPF_NEG_FIXINT: {
 					int8 val = byte; // automatically converts to signed two's comp
 					@cur_value = mp_value(type, format, any(val));
@@ -1848,7 +1794,6 @@ class mp_decoder {
 					set_state(MPDS_READ);
 				}
 				break;
-
 				// now, fix str/array/map, which store a count here but need further data to be read
 				case MPF_FIXSTR: {
 					set_currents(format, type, count_type, count);
@@ -1856,21 +1801,18 @@ class mp_decoder {
 					set_state(MPDS_CONTENT);
 				}
 				break;
-
 				case MPF_FIXARRAY: {
 					set_currents(format, type, count_type, count);
 					cur_count_argument = byte & 0x0F;
 					set_state(MPDS_CONTENT);
 				}
 				break;
-
 				case MPF_FIXMAP: {
 					set_currents(format, type, count_type, count);
 					cur_count_argument = byte & 0x0F;
 					set_state(MPDS_CONTENT);
 				}
 				break;
-
 				default:
 					set_state(MPDS_INVALID);
 					outformat = MP_INVALID;
@@ -1894,7 +1836,6 @@ class mp_decoder {
 
 	mp_decoder_state read_count(uint &out outcount = void) {
 		if (state != MPDS_COUNT) return MPDS_INVALID_OPERATION;
-
 		uint bytes_to_read = cur_count & 0x7f; // knock off the constant bit
 		if (stream.available < bytes_to_read) {
 			set_state(MPDS_MORE_DATA);
@@ -1908,61 +1849,51 @@ class mp_decoder {
 					vala.store(val);
 				}
 				break;
-
 				case MPF_FLOAT64: {
 					double val = stream.read_double();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_UINT8: {
 					uint8 val = stream.read_uint8();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_UINT16: {
 					uint16 val = stream.read_uint16();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_UINT32: {
 					uint32 val = stream.read_uint();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_UINT64: {
 					uint64 val = stream.read_uint64();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_INT8: {
 					int8 val = stream.read_int8();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_INT16: {
 					int16 val = stream.read_int16();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_INT32: {
 					int32 val = stream.read_int();
 					vala.store(val);
 				}
 				break;
-
 				case MPF_INT64: {
 					int64 val = stream.read_int64();
 					vala.store(val);
 				}
 				break;
-
 				default: {
 					set_state(MPDS_INVALID);
 					outcount = 0;
@@ -1978,15 +1909,12 @@ class mp_decoder {
 				case MPC_8BIT:
 					count_argument = stream.read_uint8();
 					break;
-
 				case MPC_16BIT:
 					count_argument = stream.read_uint16();
 					break;
-
 				case MPC_32BIT:
 					count_argument = stream.read_uint();
 					break;
-
 				default:
 					set_state(MPDS_INVALID);
 					outcount = 0;
@@ -2001,7 +1929,6 @@ class mp_decoder {
 
 	mp_decoder_state read_ext_type(int8 &out out_ext_type = void) {
 		if (state != MPDS_EXT_TYPE) return MPDS_INVALID_OPERATION;
-
 		if (stream.available < 1) {
 			set_state(MPDS_MORE_DATA);
 			return state;
@@ -2015,7 +1942,6 @@ class mp_decoder {
 
 	mp_decoder_state read_content(bool skip = false) {
 		if (state != MPDS_CONTENT) return MPDS_INVALID_OPERATION;
-
 		if (cur_count_type == MPCT_BYTES) {
 			// number of bytes expected is in cur_count_argument, we read that many bytes into a string
 			// the formats known to use MPCT_BYTES are str, bin, and ext, all of which use a string as the base data
@@ -2035,7 +1961,6 @@ class mp_decoder {
 					@cur_value = mp_value(cur_type, cur_format, any(mp_ext(cur_ext_type, data)));
 				else
 					@cur_value = mp_value(cur_type, cur_format, any(data));
-
 				set_state(MPDS_READ);
 			}
 		} else if (cur_count_type == MPCT_ITEMS) {
@@ -2046,7 +1971,6 @@ class mp_decoder {
 				return MPDS_INVALID;
 			}
 			if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, false, max_recursion, recursion_level + 1, strict_map_keys);
-
 			// if it isn't null we're likely handling a prematurely terminated read due to more data, in which case we just want to pass off
 			try {
 				mp_decoder_state ts = sub_decoder.subdecoder_iterate_read();
@@ -2075,7 +1999,6 @@ class mp_decoder {
 				return MPDS_INVALID;
 			}
 			if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, true, max_recursion, recursion_level + 1, strict_map_keys);
-
 			// ditto with arrays
 			try {
 				mp_decoder_state ts = sub_decoder.subdecoder_iterate_read();
@@ -2167,7 +2090,6 @@ class mp_decoder {
 										is_map_value = true;
 									}
 									break;
-
 									default: {
 										set_state(MPDS_INVALID);
 										throw(MP_INVALID_KEY_TYPE_EXCEPTION);
@@ -2190,7 +2112,6 @@ class mp_decoder {
 										is_map_value = true;
 									}
 									break;
-
 									default: {
 										set_state(MPDS_INVALID);
 										throw(MP_INVALID_KEY_TYPE_EXCEPTION);
@@ -2274,15 +2195,12 @@ class mp_encoder {
 			case MPC_8BIT:
 				stream.write_uint8(count_value);
 				break;
-
 			case MPC_16BIT:
 				stream.write_uint16(count_value);
 				break;
-
 			case MPC_32BIT:
 				stream.write_uint(count_value);
 				break;
-
 			default:
 				throw("msgpack invalid count size");
 				break;
@@ -2305,7 +2223,6 @@ class mp_encoder {
 			case MPF_TRUE:
 				stream.write_uint8(v.format);
 				break;
-
 			default:
 				throw("msgpack invalid format for literal");
 				break;
@@ -2320,12 +2237,10 @@ class mp_encoder {
 				stream.write_uint8(v.format);
 				stream.write_float(v.get_float());
 				break;
-
 			case MPF_FLOAT64:
 				stream.write_uint8(v.format);
 				stream.write_double(v.get_double());
 				break;
-
 			default:
 				throw("msgpack invalid format for float");
 				break;
@@ -2339,51 +2254,41 @@ class mp_encoder {
 			case MPF_POS_FIXINT:
 				stream.write_uint8(v.get_uint8());
 				break;
-
 			case MPF_NEG_FIXINT:
 				stream.write_int8(v.get_int8());
 				break;
-
 			case MPF_UINT8:
 				stream.write_uint8(v.format);
 				stream.write_uint8(v.get_uint8());
 				break;
-
 			case MPF_UINT16:
 				stream.write_uint8(v.format);
 				stream.write_uint16(v.get_uint16());
 				break;
-
 			case MPF_UINT32:
 				stream.write_uint8(v.format);
 				stream.write_uint(v.get_uint32());
 				break;
-
 			case MPF_UINT64:
 				stream.write_uint8(v.format);
 				stream.write_uint64(v.get_uint64());
 				break;
-
 			case MPF_INT8:
 				stream.write_uint8(v.format);
 				stream.write_int8(v.get_int8());
 				break;
-
 			case MPF_INT16:
 				stream.write_uint8(v.format);
 				stream.write_int16(v.get_int16());
 				break;
-
 			case MPF_INT32:
 				stream.write_uint8(v.format);
 				stream.write_int(v.get_int32());
 				break;
-
 			case MPF_INT64:
 				stream.write_uint8(v.format);
 				stream.write_int64(v.get_int64());
 				break;
-
 			default:
 				throw("msgpack invalid format for integer");
 				break;
@@ -2400,7 +2305,6 @@ class mp_encoder {
 				stream.write_uint8(to_write);
 			}
 			break;
-
 			// use fall-through here to operate only on valid string/bin formats and raise an exception for everything else
 			case MPF_STR8:
 			case MPF_STR16:
@@ -2412,7 +2316,6 @@ class mp_encoder {
 				this.encode_count(mp_infomap[v.format][MPI_COUNT], data.length()); // length of string in the proper number of bytes
 			}
 			break;
-
 			default:
 				throw("msgpack invalid string/bin format passed to write_string");
 				return;
@@ -2435,7 +2338,6 @@ class mp_encoder {
 			case MPF_FIXEXT16:
 				stream.write_uint8(v.format); // just format, no count
 				break;
-
 			// non-constant widths
 			case MPF_EXT8:
 			case MPF_EXT16:
@@ -2443,7 +2345,6 @@ class mp_encoder {
 				stream.write_uint8(v.format);
 				this.encode_count(mp_infomap[v.format][MPI_COUNT], data.length()); // length of string in the proper number of bytes
 				break;
-
 			default:
 				throw("msgpack invalid format for ext");
 				return;
@@ -2466,14 +2367,12 @@ class mp_encoder {
 				stream.write_uint8(to_write);
 			}
 			break;
-
 			case MPF_ARRAY16:
 			case MPF_ARRAY32: {
 				stream.write_uint8(v.format);
 				this.encode_count(mp_infomap[v.format][MPI_COUNT], len);
 			}
 			break;
-
 			default:
 				throw("msgpack invalid format for array");
 				return;
@@ -2497,14 +2396,12 @@ class mp_encoder {
 				stream.write_uint8(to_write);
 			}
 			break;
-
 			case MPF_MAP16:
 			case MPF_MAP32: {
 				stream.write_uint8(v.format);
 				this.encode_count(mp_infomap[v.format][MPI_COUNT], len);
 			}
 			break;
-
 			default:
 				throw("msgpack invalid format for map");
 				return;
@@ -2529,32 +2426,25 @@ class mp_encoder {
 				case MPT_BOOLEAN:
 					this.encode_literal(v);
 					break;
-
 				case MPT_FLOAT:
 					this.encode_float(v);
 					break;
-
 				case MPT_INT:
 					this.encode_int(v);
 					break;
-
 				case MPT_STRING:
 				case MPT_BIN:
 					this.encode_string(v);
 					break;
-
 				case MPT_EXT:
 					this.encode_ext(v);
 					break;
-
 				case MPT_ARRAY:
 					this.encode_array(v, sort_map_keys, recursion_level + 1);
 					break;
-
 				case MPT_MAP:
 					this.encode_map(v, sort_map_keys, recursion_level + 1);
 					break;
-
 				default:
 					throw("msgpack invalid value type");
 					break;
@@ -2768,14 +2658,14 @@ class mp_encoder {
 }
 
 /* convenience functions
-* These functions make it easier to work with msgpack, assuming you have/want the entire stream.
-* They handle quick, temporary usage of an encoder and decoder so that you don't have to
-* and are only really useful when you already know for a fact you have all the data to decode
-* or want to encode an entire batch of values at once and get a complete dump immediately
+ * These functions make it easier to work with msgpack, assuming you have/want the entire stream.
+ * They handle quick, temporary usage of an encoder and decoder so that you don't have to
+ * and are only really useful when you already know for a fact you have all the data to decode
+ * or want to encode an entire batch of values at once and get a complete dump immediately
 *
-* They follow a sort of json-like API, where loads and dumps correspond to reading data from and writing data to a string respectively.
-* Furthermore, the chain functions allow you to work with an array at the top level which is not actually serialized as an aray
-* but rather represents the stream of values directly.
+ * They follow a sort of json-like API, where loads and dumps correspond to reading data from and writing data to a string respectively.
+ * Furthermore, the chain functions allow you to work with an array at the top level which is not actually serialized as an aray
+ * but rather represents the stream of values directly.
 */
 
 // dumps, dump a value to a string and return it immediately
