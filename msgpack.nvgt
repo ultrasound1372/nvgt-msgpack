@@ -196,17 +196,17 @@ const int[][] mp_prepare_infomap() {
 
 // class for all values read from the stream, to be stored in maps and arrays
 class mp_value {
-	const int type {
+	const mp_type type {
 		get const { return this.itype; }
 	}
-	const int format {
+	const mp_format format {
 		get const {
 			// something special here, the arrays and maps stored by this might have been mutated!
 			// to avoid re-wrapping, just recalculate format based on them
 			if (this.itype == MPT_ARRAY) {
 				mp_value@[]@ v = this.get_array();
 				if (v.length() > 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-				int format = 0;
+				mp_format format = MPF_UNDETERMINED;
 				uint len = v.length();
 				if (len <= 0x0F) format = MPF_FIXARRAY;
 				else if (len <= 0xFFFF) format = MPF_ARRAY16;
@@ -214,7 +214,7 @@ class mp_value {
 				return format;
 			} else if (this.itype == MPT_MAP) {
 				mp_map@ v = this.get_map();
-				int format = 0;
+				mp_format format = MPF_UNDETERMINED;
 				uint len = v.get_size();
 				if (len <= 0x0F) format = MPF_FIXMAP;
 				else if (len <= 0xFFFF) format = MPF_MAP16;
@@ -266,15 +266,16 @@ class mp_value {
 		}
 	}
 
-	private int itype, iformat;
+	private mp_type itype;
+	private mp_format iformat;
 	private any@ content;
 
-	mp_value(int type, int format, any@ content) {
+	mp_value(mp_type type, mp_format format, any@ content) {
 		this.init(type, format, content);
 	}
 
 	// convenience function used by all the constructors, since you can't call this.
-	private void init(int type, int format, any@ content) {
+	private void init(mp_type type, mp_format format, any@ content) {
 		assert(type != MPT_UNDETERMINED && format != MPF_UNDETERMINED, "Undetermined type and/or format in value initialization");
 		assert(mp_infomap[format][MPI_TYPE] == type, "type/format mismatch in value initialization");
 		this.itype = type;
@@ -651,7 +652,7 @@ class mp_value {
 	// once format is decided, squish value to conform to it
 	private void store_positive_int(uint64 v) {
 		any a;
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		if (v <= 0x7f) {
 			uint8 va = v;
 			a.store(va);
@@ -677,7 +678,7 @@ class mp_value {
 
 	private void store_negative_int(int64 v) {
 		any a;
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		if (v >= -32) {
 			int8 va = v;
 			a.store(va);
@@ -729,7 +730,7 @@ class mp_value {
 	// store strings as either text or bin, depending on the value of is_bin
 	mp_value(const string &in v, bool is_bin = false) {
 		if (v.length() > 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		uint len = v.length();
 		if (!is_bin) {
 			// str type, we have fixstr available
@@ -749,7 +750,7 @@ class mp_value {
 	mp_value(mp_value@[] & v) {
 		// ref not handle so can't be null
 		if (v.length() > 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		uint len = v.length();
 		if (len <= 0x0F) format = MPF_FIXARRAY;
 		else if (len <= 0xFFFF) format = MPF_ARRAY16;
@@ -760,7 +761,7 @@ class mp_value {
 	mp_value(mp_map& v) {
 		// ditto with ref
 		// don't have to check size because map return type is uint, so even if it were too big it can't tell us
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		uint len = v.get_size();
 		if (len <= 0x0F) format = MPF_FIXMAP;
 		else if (len <= 0xFFFF) format = MPF_MAP16;
@@ -770,7 +771,7 @@ class mp_value {
 
 	mp_value(mp_ext& v) {
 		if (v.data.length() >= 0xFFFFFFFF) throw(MP_LARGE_VALUE_EXCEPTION);
-		int format = 0;
+		mp_format format = MPF_UNDETERMINED;
 		uint len = v.data.length();
 		if (len == 1) format = MPF_FIXEXT1;
 		else if (len == 2) format = MPF_FIXEXT2;
@@ -1546,10 +1547,10 @@ class mp_decoder {
 	protected datastream@ stream;
 	// these values are to be used when calling functions operating incrementally on an incoming stream
 	// they keep track of internal data between calls
-	protected int cur_type = MPT_UNDETERMINED;
-	protected int cur_format = MPF_UNDETERMINED;
-	protected int cur_count_type = MPCT_UNDETERMINED;
-	protected int cur_count = MPC_UNDETERMINED;
+	protected mp_type cur_type = MPT_UNDETERMINED;
+	protected mp_format cur_format = MPF_UNDETERMINED;
+	protected mp_count_type cur_count_type = MPCT_UNDETERMINED;
+	protected mp_count cur_count = MPC_UNDETERMINED;
 	protected uint cur_count_argument = 0;
 	protected int8 cur_ext_type = 0;
 	protected bool cur_skip_content = false;
@@ -1739,7 +1740,7 @@ class mp_decoder {
 		return false;
 	}
 
-	mp_decoder_state read_format(int& out outformat = void) {
+	mp_decoder_state read_format(mp_format& out outformat = void) {
 		if (state == MPDS_END_DATA) return state;
 		else if (state != MPDS_READY) return MPDS_INVALID_OPERATION; // invalid operation order!
 		if (stream.available < 1) {
