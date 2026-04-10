@@ -171,7 +171,7 @@ If you wish to support serialization and deserialization of your own custom obje
 | `mp_value(float)` | Wraps the float primitive. |
 | `mp_value(double)` | Wraps the double primitive. | (1) |
 | `mp_value(string, bool is_bin = false)` | Wraps the string primitive. | (2) |
-| `mp_value(mp_value@[]&)` | Wraps an aray of value types into the msgpack array type. | (3) |
+| `mp_value(mp_value@[]&)` | Wraps an array of value types into the msgpack array type. | (3) |
 | `mp_value(mp_map&)` | Wraps a map object into the msgpack map type. | (3) |
 | `mp_value(mp_ext&)` | Wraps an ext object into the msgpack extension type. | (4) |
 | `mp_value(integer)` | Wraps any of the primitive integer types (u)int8/16/32/64. | (5) |
