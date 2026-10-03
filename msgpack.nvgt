@@ -1,5 +1,5 @@
 /* msgpack.nvgt - fully-featured pure-NVGT msgpack serialization/deserialization library
- * Copyright (C) 2024 Colton Hill
+ * Copyright (C) 2026 Colton Hill
  *
  *  This software is provided 'as-is', without any express or implied
  *  warranty.  In no event will the authors be held liable for any damages
@@ -42,7 +42,8 @@ enum mp_type {
 const string MP_TYPE_MISMATCH_EXCEPTION = "msgpack type mismatch";
 const string MP_INVALID_KEY_TYPE_EXCEPTION = "msgpack invalid key type";
 const string MP_RECURSION_LIMIT_EXCEPTION = "msgpack maximum recursion depth exceeded";
-const string MP_LARGE_VALUE_EXCEPTION = "msgpack value too large to encode";
+const string MP_LARGE_VALUE_EXCEPTION = "msgpack value too large";
+const string MP_OOM_EXCEPTION = "msgpack out of memory";
 
 /* detailed format enumeration
  * values in this enum are taken from the starting byte of each format, or the lowest such if a range is possible due to bitfields
@@ -314,20 +315,26 @@ class mp_value {
 	// and the conversion functions for these types will pass true here
 	// especially for float, loss of precision concerns apply!
 	const float get_float(bool allow_int_source = false) const {
-		if (this.itype == MPT_FLOAT || (allow_int_source && this.itype == MPT_INT)) {
+		if (this.itype == MPT_FLOAT) {
 			float ret;
 			content.retrieve(ret);
 			return ret;
+		} else if (allow_int_source && this.itype == MPT_INT) {
+			if (this.signed == 1) return float(this.get_int64());
+			else return float(this.get_uint64());
 		}
 		throw(MP_TYPE_MISMATCH_EXCEPTION);
 		return 0.0f;
 	}
 
 	const double get_double(bool allow_int_source = false) const {
-		if (this.itype == MPT_FLOAT || (allow_int_source && this.itype == MPT_INT)) {
+		if (this.itype == MPT_FLOAT) {
 			double ret;
 			content.retrieve(ret);
 			return ret;
+		} else if (allow_int_source && this.itype == MPT_INT) {
+			if (this.signed == 1) return double(this.get_int64());
+			else return double(this.get_uint64());
 		}
 		throw(MP_TYPE_MISMATCH_EXCEPTION);
 		return 0.0;
@@ -884,6 +891,10 @@ class mp_value {
 		}
 		return false;
 	}
+
+	// letting you assign lets you mutate a value inside a container, including changing its type
+	// block it. This does not affect map/array inner mutation.
+	mp_value& opAssign(const mp_value&) delete;
 }
 
 // msgpack extension type
@@ -1014,6 +1025,8 @@ class mp_timestamp {
 			throw("msgpack invalid timestamp format");
 		}
 		ds.close();
+		if (this.nsecs > 999999999)
+			throw("msgpack invalid timestamp, nanoseconds must be in the range 0..999999999");
 	}
 
 	mp_timestamp(int64 seconds, uint nanoseconds) {
@@ -1034,7 +1047,7 @@ class mp_timestamp {
 	private string make_data() const {
 		// serialization procedure adapted from the spec
 		datastream ds("", "", STREAM_BYTE_ORDER_NETWORK);
-		if (this.secs > 0 && (this.secs >> 34) == 0) {
+		if (this.secs >= 0 && (this.secs >> 34) == 0) {
 			uint64 data64 = (int64(this.nsecs) << 34) | this.secs;
 			if (data64 & 0xffffffff00000000 == 0) {
 				// timestamp 32
@@ -1077,17 +1090,20 @@ class mp_timestamp {
 
 	bool opEquals(mp_ext@ other) const {
 		if (other is null) return false; // same as mp_value
-		if (this is other) return true;
-		else if (other !is null && other.type == MP_EXT_TIMESTAMP) {
-			mp_timestamp ts(other);
-			return this.secs == ts.seconds && this.nsecs == ts.nanoseconds;
+		else if (other.type == MP_EXT_TIMESTAMP) {
+			try {
+				mp_timestamp ts(other);
+				return this.secs == ts.seconds && this.nsecs == ts.nanoseconds;
+			} catch {
+				return false;
+			}
 		} else return false;
 	}
 
 	int opCmp(mp_timestamp& other) const {
 		if (other.seconds == this.secs)
-			return (other.nanoseconds == this.nsecs ? 0 : other.nanoseconds < this.nsecs ? -1 : 1);
-		else return (other.seconds < this.secs ? -1 : 1);
+			return (other.nanoseconds == this.nsecs ? 0 : this.nsecs < other.nanoseconds ? -1 : 1);
+		else return (this.secs < other.seconds ? -1 : 1);
 	}
 
 	int opCmp(timestamp& other) const {
@@ -1130,7 +1146,8 @@ class mp_map {
 	}
 
 	bool delete (const string &in key) {
-		return idict.delete(key) || kdict.delete(key);
+		kdict.delete(key);
+		return idict.delete(key);
 	}
 
 	void delete_all() {
@@ -1588,7 +1605,7 @@ class mp_decoder {
 			@cur_map = temp;
 		} else {
 			mp_value@[] temp;
-			temp.reserve(items_to_read);
+			temp.reserve(items_to_read < 1024 ? items_to_read : 1024);
 			@cur_array = temp;
 		}
 	}
@@ -1971,9 +1988,9 @@ class mp_decoder {
 				throw(MP_RECURSION_LIMIT_EXCEPTION);
 				return MPDS_INVALID;
 			}
-			if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, false, max_recursion, recursion_level + 1, strict_map_keys);
-			// if it isn't null we're likely handling a prematurely terminated read due to more data, in which case we just want to pass off
 			try {
+				if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, false, max_recursion, recursion_level + 1, strict_map_keys);
+				// if it isn't null we're likely handling a prematurely terminated read due to more data, in which case we just want to pass off
 				mp_decoder_state ts = sub_decoder.subdecoder_iterate_read();
 				if (ts == MPDS_READ) {
 					// retrieve that value now from the sub-decoder and destroy it
@@ -1985,11 +2002,10 @@ class mp_decoder {
 				// if mpds_MORE_DATA happens, pushing more data will clear it and allow this to work again
 				set_state(ts);
 			} catch {
-				// only potential exceptions here are max recursion and invalid key
 				// set state to invalid and rethrow, so that the entire stack of decoders becomes invalid.
-				const string exc = get_exception_info();
+				string exc = get_exception_info();
 				set_state(MPDS_INVALID);
-				throw(exc);
+				throw(wrap_exception(exc));
 				return MPDS_INVALID;
 			}
 		} else if (cur_count_type == MPCT_ITEMS2X) {
@@ -1999,9 +2015,9 @@ class mp_decoder {
 				throw(MP_RECURSION_LIMIT_EXCEPTION);
 				return MPDS_INVALID;
 			}
-			if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, true, max_recursion, recursion_level + 1, strict_map_keys);
-			// ditto with arrays
 			try {
+				if (sub_decoder is null) @sub_decoder = mp_decoder(stream, cur_count_argument, true, max_recursion, recursion_level + 1, strict_map_keys);
+				// ditto with arrays
 				mp_decoder_state ts = sub_decoder.subdecoder_iterate_read();
 				if (ts == MPDS_READ) {
 					// retrieve that value now from the sub-decoder and destroy it
@@ -2013,11 +2029,10 @@ class mp_decoder {
 				// if mpds_MORE_DATA happens, pushing more data will clear it and allow this to work again
 				set_state(ts);
 			} catch {
-				// only potential exceptions here are max recursion and invalid key
 				// set state to invalid and rethrow, so that the entire stack of decoders becomes invalid.
 				const string exc = get_exception_info();
 				set_state(MPDS_INVALID);
-				throw(exc);
+				throw(wrap_exception(exc));
 			}
 		} else {
 			set_state(MPDS_INVALID); // what state have you gotten me in, anyway?
@@ -2166,6 +2181,13 @@ class mp_decoder {
 		throw("msgpack improper call, not a subdecoder");
 		return MPDS_INVALID_OPERATION;
 	} // subdecoder_iterate_read
+
+	private string wrap_exception(const string &in exc) {
+		if (exc.starts_with("msgpack")) return exc;
+		else if (exc == "Too large array size") return MP_LARGE_VALUE_EXCEPTION;
+		else if (exc == "Out of memory") return MP_OOM_EXCEPTION;
+		else return "msgpack internal error: " + exc;
+	}
 }
 
 // msgpack encoder, writing values to a datastream
@@ -2358,7 +2380,7 @@ class mp_encoder {
 	// MPT_ARRAY
 	protected void encode_array(mp_value@ v, bool sort_map_keys, uint recursion_level) {
 		assert(v.type == MPT_ARRAY, "non-array type passed to encoder::encode_array");
-		if (recursion_level >= max_recursion)
+		if (recursion_level > max_recursion)
 			throw(MP_RECURSION_LIMIT_EXCEPTION);
 		mp_value@[]@ a = v.get_array();
 		const uint len = a.length();
@@ -2386,7 +2408,7 @@ class mp_encoder {
 	// MPT_MAP
 	protected void encode_map(mp_value@ v, bool sort_map_keys, uint recursion_level) {
 		assert(v.type == MPT_MAP, "non-map type passed to encoder::encode_map");
-		if (recursion_level >= max_recursion)
+		if (recursion_level > max_recursion)
 			throw(MP_RECURSION_LIMIT_EXCEPTION);
 		mp_map@ m = v.get_map();
 		mp_value@[][] @ p = m.get_pairs(sort_map_keys);

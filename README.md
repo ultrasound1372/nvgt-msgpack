@@ -56,12 +56,13 @@ The following public constants are a defined part of this API.
 
 ## Exceptions
 These string constants are used in throw statements for common cases, making the job of exception checking slightly easier on the caller. Note, however, that not all exception scenarios are covered by these constants, some exceptions are only thrown in one possible case and thus are not defined here.
-All exceptions thrown by this library start with the string "msgpack " to help a little with checking such things, E.G. startswith on the exception string.
+All exceptions thrown by this library start with the string "msgpack " to help a little with checking such things, E.G. starts_with on the exception string.
 
 - `MP_TYPE_MISMATCH_EXCEPTION`: Thrown when an attempted type conversion is impossible.
 - `MP_INVALID_KEY_TYPE_EXCEPTION`: Thrown when an unsupported key type is encountered when encoding or decoding a map. Whether a given type is supported depends on the setting of strict key mode.
 - `MP_RECURSION_LIMIT_EXCEPTION`: Thrown when the maximum recursion depth is exceeded when encoding or decoding.
-- `MP_LARGE_VALUE_EXCEPTION`: Thrown when attempting to encode a value that exceeds the representable bounds in msgpack. This happens when the length of a string or ext data, the number of values in an array, or the number of pairs in a map exceeds (2^32)-1.
+- `MP_LARGE_VALUE_EXCEPTION`: Thrown when attempting to encode a value that exceeds the representable bounds in msgpack. This happens when the length of a string or ext data, the number of values in an array, or the number of pairs in a map exceeds (2^32)-1. Also thrown when a decoded value is too large to be represented by NVGT, in particular arrays.
+- `MP_OOM_EXCEPTION`: Thrown when the program runs out of memory while decoding. It is possible for a bare "Out of memory" exception to come from other paths, such as very large strings which are not in a container. The msgpack one is "msgpack out of memory".
 
 ## Known Extension Type Codes
 These int8 constants are used as the type code for known extension types, those types for which the library itself defines a conversion beyond ext objects.
@@ -285,7 +286,7 @@ A **vector** object can likewise be implicitly or explicitly converted to an ext
 The serialization of vectors, which is a custom implementation by this library, is achieved by using the type code 86 (ASCII V), and a payload consisting of the three floats (in network byte order) written in the order x y z.
 
 ## mp_timestamp
-A timestamp representing seconds and nanoseconds since the unix epoch (1970-01-01T0:00+0:00) stored as the standard msgpack extension type -1, the constant **EXT_TIMESTAMP**.
+A timestamp representing seconds and nanoseconds since the unix epoch (1970-01-01T0:00+0:00) stored as the standard msgpack extension type -1, the constant **MP_EXT_TIMESTAMP**.
 
 Warning: Due to the fact that NVGT's timestamp precision is microseconds, round-tripping through NVGT timestamp objects is not lossless! The nanoseconds will be truncated to 0 and you will be left with microsecond precision.
 
