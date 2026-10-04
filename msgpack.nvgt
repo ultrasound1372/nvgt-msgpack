@@ -2593,7 +2593,9 @@ class mp_encoder {
 			stream.rseek(stream.rpos); // fix available
 		} catch {
 			const string exc = get_exception_info();
+			dbgout("encoder.write_value caught "+exc);
 			if (!leave_partial) {
+				dbgout("rolling back");
 				// roll back to previous state
 				const uint64 real_read_before = (read_before > 0 ? uint64(read_before) : 0);
 				stream.str(stream.str().substr(0, int(real_read_before + unread_before))); // all the way up to the last byte before this write.
