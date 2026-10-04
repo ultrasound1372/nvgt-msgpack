@@ -727,11 +727,10 @@ class mp_value {
 		// if we cast to float, will the value be equivalent?
 		// if so, we're saving 4 bytes
 		float vf = v;
-		if (v == vf) {
+		if (v == vf)
 			this.init(MPT_FLOAT, MPF_FLOAT32, any(vf));
-		} else {
+		else
 			this.init(MPT_FLOAT, MPF_FLOAT64, any(v));
-		}
 	}
 
 	// store strings as either text or bin, depending on the value of is_bin
@@ -2153,9 +2152,9 @@ class mp_decoder {
 					else break;
 				} // while
 				// if we have no items to read the above loop won't execute even once, and state will still be MPDS_READY from us entering!
-				if (state == MPDS_READY && items_to_read == 0) {
+				if (state == MPDS_READY && items_to_read == 0)
 					set_state(MPDS_READ);
-				} // MPDS_READY and 0 items to read
+				// MPDS_READY and 0 items to read
 			} // is_map
 			else {
 				while (items_to_read > 0) {
@@ -2170,9 +2169,9 @@ class mp_decoder {
 					} else break; // some other state happened
 				} // while
 				// if we have no items to read the above loop won't execute even once, and state will still be MPDS_READY from us entering!
-				if (state == MPDS_READY && items_to_read == 0) {
+				if (state == MPDS_READY && items_to_read == 0)
 					set_state(MPDS_READ);
-				} // MPDS_READY and 0 items to read
+				// MPDS_READY and 0 items to read
 			} // else not map
 			return state;
 		} // nested
@@ -2710,9 +2709,8 @@ mp_value@ mp_loads(const string &in data, bool strict_map_keys = true, uint max_
 	mp_decoder dec(data, true, strict_map_keys, max_recursion); // fixed-length mode
 	try {
 		mp_decoder_state ts = dec.try_read_value();
-		if (ts == MPDS_READ) {
+		if (ts == MPDS_READ)
 			return dec.get_value();
-		}
 	} catch {
 		return null;
 	}
@@ -2726,11 +2724,10 @@ mp_value@[]@ mp_loads_chain(const string &in data, bool strict_map_keys = true, 
 	while (dec.get_state() == MPDS_READY) {
 		try {
 			mp_decoder_state ts = dec.try_read_value();
-			if (ts == MPDS_READ) {
+			if (ts == MPDS_READ)
 				ret.insert_last(dec.get_value());
-			} else {
+			else
 				break;
-			}
 		} catch {
 			break;
 		}
