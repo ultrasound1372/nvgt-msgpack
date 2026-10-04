@@ -2191,11 +2191,12 @@ class mp_decoder {
 class mp_encoder {
 	protected datastream@ stream;
 	protected uint max_recursion = 100;
-	protected bool strict_map_keys = false;
+	protected bool strict_map_keys = false, leave_partial = false;
 
-	mp_encoder(bool strict_map_keys = true, uint max_recursion = 100) {
+	mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, bool leave_partial = false) {
 		this.max_recursion = max_recursion;
 		this.strict_map_keys = strict_map_keys;
+		this.leave_partial = leave_partial;
 		@this.stream = datastream("", "", STREAM_BYTE_ORDER_NETWORK);
 		this.stream.sync_rw_cursors = false;
 	}
@@ -2438,7 +2439,7 @@ class mp_encoder {
 	}
 
 	// meant to be called by outside code via the write_value method if they have direct value handles, and also recursively by map and array code
-	protected void encode_value(mp_value@ v, bool sort_map_keys = false, uint recursion_level = 0) {
+	protected void encode_value(mp_value@ v, bool sort_map_keys, uint recursion_level) {
 		if (v is null) this.encode_literal(mp_value()); // replace the null handle with the nil value, not equivalent!
 		else {
 			switch (v.type) {
@@ -2470,12 +2471,28 @@ class mp_encoder {
 					break;
 			}
 		}
-		stream.rseek(stream.rpos); // make available actually work
 	}
 
-	// public-facing method, deligates to the private one so caller can't fudge recursion level
+	// public-facing method, deligates to the private one so caller can't fudge recursion level and also for rollback
 	void write_value(mp_value@ v, bool sort_map_keys = false) {
-		this.encode_value(v, sort_map_keys);
+		// stored positions should rollback be needed
+		int64 read_before = stream.rpos; // may be -1
+		uint64 unread_before = stream.available;
+		try {
+			encode_value(v, sort_map_keys, 0);
+			stream.rseek(stream.rpos); // fix available
+		} catch {
+			const string exc = get_exception_info();
+			if (!leave_partial) {
+				// roll back to previous state
+				const uint64 real_read_before = (read_before > 0 ? uint64(read_before) : 0);
+				stream.str(stream.str().substr(0, int(real_read_before + unread_before))); // all the way up to the last byte before this write.
+				// breaks above 2 GiB due to substr taking an int, and the copy may potentially throw "Out of memory" under extreme buffering
+				stream.rseek(real_read_before); // put the read cursor where it was before and fix available
+				stream.wseek_end(); // writes still need to append
+			} else stream.rseek(stream.rpos); // available also needs to be fixed here
+			throw(exc);
+		}
 	}
 
 	string read(uint count = 0) {
@@ -2533,40 +2550,40 @@ class mp_encoder {
 	// boilerplate, as with map, handles explicit and implicit typed values
 	// everything just gets wrapped in a value, which handles any conversion, and passed off to write_value
 	void write_nil() {
-		this.encode_value(null); // that translates the null handle into nil
+		this.write_value(null); // that translates the null handle into nil
 	}
 
 	void write_bool(bool v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_float(float v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_double(double v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_string(const string &in v) {
-		this.encode_value(@mp_value(v, false));
+		this.write_value(@mp_value(v, false));
 	}
 
 	// distinguish here, as above
 	void write_bin(const string &in v) {
-		this.encode_value(@mp_value(v, true));
+		this.write_value(@mp_value(v, true));
 	}
 
 	void write_array(mp_value@[] & v, bool sort_map_keys = false) {
-		this.encode_value(@mp_value(v), sort_map_keys);
+		this.write_value(@mp_value(v), sort_map_keys);
 	}
 
 	void write_map(mp_map& v, bool sort_map_keys = false) {
-		this.encode_value(@mp_value(v), sort_map_keys);
+		this.write_value(@mp_value(v), sort_map_keys);
 	}
 
 	void write_ext(mp_ext& v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_ext(int8 ext_type, const string &in ext_data) {
@@ -2574,105 +2591,105 @@ class mp_encoder {
 	}
 
 	void write_uint8(uint8 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_int8(int8 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_uint16(uint16 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_int16(int16 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_uint32(uint32 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_int32(int32 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	// uint32 and int32 are aliases of uint and int respectively, but we have both here for the sake of being explicit
 	void write_uint(uint v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_int(int v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_uint64(uint64 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write_int64(int64 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	// and automatic type-choosing methods
 	void write(bool v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(float v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(double v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(const string &in v, bool is_bin = false) {
-		this.encode_value(@mp_value(v, is_bin));
+		this.write_value(@mp_value(v, is_bin));
 	}
 
 	void write(mp_value@[] & v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(mp_map& v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(mp_ext& v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(uint8 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(int8 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(uint16 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(int16 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(uint v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(int v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(uint64 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 
 	void write(int64 v) {
-		this.encode_value(@mp_value(v));
+		this.write_value(@mp_value(v));
 	}
 }
 
@@ -2689,14 +2706,14 @@ class mp_encoder {
 
 // dumps, dump a value to a string and return it immediately
 const string mp_dumps(mp_value@ v, bool sort_map_keys = false, bool strict_map_keys = true, uint max_recursion = 100) {
-	mp_encoder enc(strict_map_keys, max_recursion);
+	mp_encoder enc(strict_map_keys, max_recursion, true);
 	enc.write_value(v, sort_map_keys);
 	return enc.flush();
 }
 
 // dumps_chain, dump a chain (array) of values to a string and return it immediately. Array is not serialized as array.
 const string mp_dumps_chain(mp_value@[]& v, bool sort_map_keys = false, bool strict_map_keys = true, uint max_recursion = 100) {
-	mp_encoder enc(strict_map_keys, max_recursion);
+	mp_encoder enc(strict_map_keys, max_recursion, true);
 	for (uint i = 0; i < v.length(); i++)
 		enc.write_value(v[i], sort_map_keys);
 	return enc.flush();

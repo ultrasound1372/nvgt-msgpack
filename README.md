@@ -691,13 +691,14 @@ Note that unlike the decoder, the operation of an encoder is much simpler, due t
 ### Constructor
 Create an encoder ready for use, with optionally specified constraints.
 ```
-mp_encoder(bool strict_map_keys = true, uint max_recursion = 100);
+mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, bool leave_partial = false);
 ```
 
 #### Arguments
 
 - `bool strict_map_keys`: Whether the keys of maps should be constrained to the str and bin types (strict key mode). Defaults to true.
 - `uint max_recursion`: The maximum recursion depth, the highest allowed level of nesting of arrays and maps. Defaults to 100.
+- `bool leave_partial`: Whether partial data from a failed write should be left in the buffer or rolled back/. Defaults to false.
 
 #### Remarks
 If strict key mode is enabled (the default), the encoder will throw the invalid key exception if you attempt to encode a map with any key types other than str and bin. If it is disabled, the encoder will accept all types except those of array, map and ext for map keys.
@@ -705,7 +706,10 @@ If strict key mode is enabled (the default), the encoder will throw the invalid 
 The maximum recursion depth limits the number of recursive encode calls for arrays and maps, which may be arbitrarily nested according to msgpack. As these are handled by making use of recursion on the NVGT side, too much nesting could lead to dramatically increased memory usage, performance degradation, or the worst case, a stack overflow error in NVGT when recursive function calls go too deep. This limit allows you to bail out at a sane level of nesting before that happens, and the default of 100 should be more than anyone needs. You may set it even lower or higher for your own use cases and constraints.  
 For the case of encoding, the maximum recursion level is also a way to prevent an infinite loop, runaway memory usage, and stack overflow if a deliberate cycle is created in the data to be encoded, as the encoder does not keep track of all parent values it has encoded in the child calls. Msgpack data should always be acyclic, as the msgpack format defines no mechanism by which cycles could even be introduced much less represented.
 
-The maximum recursion level and strict key mode can only be set during object creation and are used for the lifetime of any encoder object. If you wish to operate under a different set of constraints, you will have to create another encoder object.
+If leave partial is disabled, the data sitting in the buffer is rolled back by copying the buffer's state before this write and reinitializing it. This preserves your read and write cursors, but may result in a slight delay and brief spike in memory consumption.  
+It will not function if your buffer is near 2 GiB due to argument sizes in engine functions, and has the potential to throw an engine "Out of memory" exception if under significant memory pressure.
+
+The maximum recursion level, strict key mode,  and rollback mode can only be set during object creation and are used for the lifetime of any encoder object. If you wish to operate under a different set of constraints, you will have to create another encoder object.
 
 ### Methods
 #### write_value
@@ -725,9 +729,9 @@ As with `mp_map.set`, a null handle will be automatically converted to the nil v
 If the maximum recursion depth is exceeded while encoding, **MP_RECURSION_LIMIT_EXCEPTION** will be thrown.  
 If strict key mode is enabled and a map is encountered with a key type other than str or bin, the exception **MP_INVALID_KEY_TYPE_EXCEPTION** will be thrown.
 
-This method handles any recursion present in values that hold maps or arrays, but has no facilities for allevatinging cycles. Any cycles will result in either a stack overflow or the recursion limit exceeded exception being thrown.
+This method handles any recursion present in values that hold maps or arrays, but has no facilities for alleviating cycles. Any cycles will result in either a stack overflow or the recursion limit exceeded exception being thrown.
 
-If any exception is thrown from this or any of the other writing functions, the content of the internal stream is undefined, and is likely to contain partial data. Any fully written values from prior calls can be recovered, but especially in the case of recursion limit exceeded, recovery is likely unfeasible for the partial value written with this call.
+If any exception is thrown from this or any of the other writing functions, the content of the internal stream depends on the leave partial flag. If it is true, the stream contents are undefined, and will likely contain partial data. Any fully written values from prior calls can be recovered, but especially in the case of recursion limit exceeded, recovery is likely unfeasible for the partial value written with this call. If it is false, the contents of the stream are restored to what they were before this write call.
 
 #### write
 Serialize a value to the stream, automatically guessing what type to serialize.
@@ -765,8 +769,8 @@ Write methods with named types, rather than mere deduction based on their argume
 
 ##### Notes
 
-1. Only write method that takes no value argument, as it simply writes a nil value. Equivalent to `mp_encoder.write_value(null);` which itself is equivalent to `mp_encoder.write_value(value());`. Provided to be more explicit and easier to read.
-2. As with value constructors, required to be a reference so you cannot pass null. Mutation tracking is not valid beyond this point, once the data is encoded it will not change. Any further mutations to the object will result in the object and the data serialized from it being out of sync. Exceptions thrown by these calls are likely to have left partial data in the buffer, constituting an invalid msgpack stream.
+1. Only write method that takes no value argument, as it simply writes a nil value. Equivalent to `mp_encoder.write_value(null);` which itself is equivalent to `mp_encoder.write_value(mp_value());`. Provided to be more explicit and easier to read.
+2. As with value constructors, required to be a reference so you cannot pass null. Mutation tracking is not valid beyond this point, once the data is encoded it will not change. Any further mutations to the object will result in the object and the data serialized from it being out of sync. Exceptions thrown by these calls may have left partial data in the buffer, constituting an invalid msgpack stream, unless rolled back.
 3. Stores value as the text (str) type.
 4. Stores value as the binary (bin) type. Equivalent to `write_value(mp_value(v, true));`. Provided to be more explicit and easier to read.
 5. Unlike the overloaded write method, which will take your variable type as-is and convert based on that, these methods will coerce your variable to the type of the argument and work based on that. The same size and sign conversions apply.
@@ -800,7 +804,7 @@ string flush();
 `string`: Any remaining data in the internal buffer
 
 ##### Remarks
-This is not exactly the same as calling read(0), though it does that too and returns that. Instead, after doing that, it closes and re-initializes the internal stream, so that its buffer is empty again. Just like with `mp_decoder.reset`, it is advised you do this after working with each stream burst, or else you may leak memory.
+This is not exactly the same as calling read(0), though it does that too and returns that. Instead, after doing that, it re-initializes the internal stream, so that its buffer is empty again. Just like with `mp_decoder.reset`, it is advised you do this after working with each stream burst, or else you may leak memory.
 
 #### Other Methods On The Underlying Stream
 In addition to read, these methods are defined which map directly to identical calls on the underlying stream, so see the datastream documentation for details on their usage.
