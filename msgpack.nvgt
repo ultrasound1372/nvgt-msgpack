@@ -2240,7 +2240,8 @@ class mp_decoder {
 				if (state == MPDS_READY && items_to_read == 0) {
 					dbgout("read all items");
 					set_state(MPDS_READ);
-				} // MPDS_READY and 0 items to read
+				}
+				// MPDS_READY and 0 items to read
 			} // is_map
 			else {
 				dbgout("subdecoder_iterate_read for array");
@@ -2261,7 +2262,8 @@ class mp_decoder {
 				if (state == MPDS_READY && items_to_read == 0) {
 					dbgout("read all items");
 					set_state(MPDS_READ);
-				} // MPDS_READY and 0 items to read
+				}
+				// MPDS_READY and 0 items to read
 			} // else not map
 			return state;
 		} // nested
@@ -2847,8 +2849,8 @@ mp_value@[]@ mp_loads_chain(const string &in data, bool strict_map_keys = true, 
 				dbgout("loads_chain got value, now have " + ret.length() + " to return");
 			} else {
 				dbgout("loads_chain got non-read state");
-				break;
 			}
+			break;
 		} catch {
 			dbgout("loads_chain got exception " + get_exception_info());
 			break;
