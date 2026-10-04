@@ -1635,11 +1635,9 @@ class mp_decoder {
 		}
 		this.reset_currents();
 		if (!nested) { // do not re-initialize a sub-decoder that is being detached!
-			this.stream.close(); // stream is shared between all sub-levels, only call close on the top-level
-			this.stream.open(initial, "", STREAM_BYTE_ORDER_NETWORK);
-			stream.sync_rw_cursors = false;
-			stream.wseek_end(); // make sure to write at end! Docs say read starts at beginning, but say nothing about write, plus we had to turn off syncing later.
-			stream.rseek(0); // the docs are in fact wrong, this started at the end too!
+			stream.str(initial);
+			stream.rseek(0); // ensure cursor is at beginning, and clear any waiting eof flags
+			stream.wseek_end();
 			this.state = MPDS_READY;
 			this.prev_state = MPDS_MORE_DATA;
 			this.fixed_length = fixed_length;
@@ -2527,10 +2525,9 @@ class mp_encoder {
 	}
 
 	string flush() {
-		string ret = this.stream.read();
-		this.stream.close();
-		this.stream.open("", "", STREAM_BYTE_ORDER_NETWORK);
-		this.stream.sync_rw_cursors = false;
+		const string ret = this.stream.read();
+		this.stream.str(""); // clear its contents
+		this.stream.rseek(0); // helps ensure state is fully initialized
 		return ret;
 	}
 
