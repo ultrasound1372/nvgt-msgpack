@@ -56,13 +56,14 @@ The following public constants are a defined part of this API.
 
 ## Exceptions
 These string constants are used in throw statements for common cases, making the job of exception checking slightly easier on the caller. Note, however, that not all exception scenarios are covered by these constants, some exceptions are only thrown in one possible case and thus are not defined here.
-All exceptions thrown by this library start with the string "msgpack " to help a little with checking such things, E.G. starts_with on the exception string.
+All exceptions thrown by this library start with the string "msgpack " to help a little with checking such things, E.G. starts_with on the exception string. It is possible, though unlikely, for a raw engine exception to be thrown by something this library calls. This library makes a best effort to wrap most exceptions, but cannot guarantee completeness.
 
 - `MP_TYPE_MISMATCH_EXCEPTION`: Thrown when an attempted type conversion is impossible.
 - `MP_INVALID_KEY_TYPE_EXCEPTION`: Thrown when an unsupported key type is encountered when encoding or decoding a map. Whether a given type is supported depends on the setting of strict key mode.
 - `MP_RECURSION_LIMIT_EXCEPTION`: Thrown when the maximum recursion depth is exceeded when encoding or decoding.
 - `MP_LARGE_VALUE_EXCEPTION`: Thrown when attempting to encode a value that exceeds the representable bounds in msgpack. This happens when the length of a string or ext data, the number of values in an array, or the number of pairs in a map exceeds (2^32)-1. Also thrown when a decoded value is too large to be represented by NVGT, in particular arrays.
-- `MP_OOM_EXCEPTION`: Thrown when the program runs out of memory while decoding. It is possible for a bare "Out of memory" exception to come from other paths, such as very large strings which are not in a container. The msgpack one is "msgpack out of memory".
+- `MP_OOM_EXCEPTION`: Thrown when the program runs out of memory while decoding or encoding. It is possible for a bare "Out of memory" exception to come from other paths, such as very large strings which are not in a container. Some equivalent of a bad allocation exception may also be thrown in these cases. The msgpack one is "msgpack out of memory".
+- `MP_LARGE_BUFFER_EXCEPTION`: Thrown when a call would potentially require materializing a string that is 4 GiB or larger from a buffer. NVGT can only represent strings up to 4 GiB.
 
 ## Known Extension Type Codes
 These int8 constants are used as the type code for known extension types, those types for which the library itself defines a conversion beyond ext objects.
@@ -70,8 +71,13 @@ These int8 constants are used as the type code for known extension types, those 
 - `MP_EXT_TIMESTAMP`: The timestamp type as defined in the msgpack specification, storing seconds and nanoseconds since the unix epoch in 4, 8 or 12 bytes. See `mp_timestamp`.
 - `MP_EXT_VECTOR`: Msgpack serialization for the NVGT vector type defined by this library. The type code is 86, corresponding to the ASCII letter 'V'. The payload is the three floats concatenated in the order x y z in network byte order.
 
+# Global variable
+This library defines one global variable which tunes performance and memory usage.
+
+- `uint64 mp_buffer_release_threshold`: When something attempts to shrink a buffer by some number of bytes, this specifies the point at which the buffer will be freed and reallocated rather than emptied and rewritten in place. See [Buffering and Compaction](#buffering-and-compaction). The default is `16 * (2 ** 20)` (16 MiB).
+
 # Functions
-The functions provided here are convenience methods that allow you to avoid having to manage encoder and decoder instances, should you know that you have the complete stream of data for decoding or the complete set of values for encoding beforehand.
+The functions provided here are convenience methods that allow you to avoid having to manage encoder and decoder instances, should you know that you have the complete stream of data for decoding or the complete set of values for encoding beforehand. They are best for infrequent, one-shot uses. For frequent reuse, use shared encoder and decoder instances.
 
 ## mp_dumps
 Serialize the given value object to a string and return it in one step.
@@ -156,6 +162,45 @@ This function is a shortcut for creating a decoder to deserialize a stream of va
 See the remarks for the decoder's constructor for the other arguments.
 
 # Classes
+## Usage Considerations
+### Thread Safety
+All of the objects in this library do not contain any locks or other concurrency primitives to keep them well-behaved under concurrent modification. When using them in a multithreaded application, keep the following in mind.
+
+- **mp_ext** and **mp_timestamp** objects are immutable. Once constructed, it is safe to pass them between threads, just as you would pass any other immutable object.
+- **mp_value** objects are immutable depending on the type of value they store. When storing anything other than maps and arrays, they are immutable in truth, and may be treated accordingly. When storing maps and arrays, however, it is possible for a clever caller to mutate the array and map that is stored inside the value even while other callers hold it. These changes are reflected in the format property if the encoding would change under sequential execution, but under concurrent execution such values should be handled with care. Ideally by not mutating them after they have been made into values.
+- **mp_map** objects and arrays of values (`mp_value@[]@`), are not thread safe. Arrays are not thread safe in NVGT, and neither are the underlying dictionaries used by `mp_map`.
+- **mp_encoder** and **mp_decoder** objects are not thread safe. Their internal state as well as the datastreams they hold are likely to be corrupted if called concurrently. For this reason, these objects should ideally belong to only one thread.
+
+All but **mp_encoder** and **mp_decoder** objects are safe to be passed between threads, especially via some thread safe transport such as a synchronized queue. It is allowed to construct a value on one thread and have it encoded on another, so long as the value is never modified after handing it off.
+
+When arrays, maps, or ext objects are wrapped in values, including when they are added to other arrays or maps, the value wrapping causes a copy to be made. Mutations in the source object are not reflected in the value. This is due to NVGT's behavior with the **any** object passed a reference. However, if a caller then retrieves a handle to the array or map via the get methods or by casting, storing directly to a handle type, that caller now holds a reference to the array or map inside the value. Mutating at this point *will* change the value.
+
+### Buffering and Compaction
+Encoder and decoder objects internally make use of NVGT's datastream objects, a wrapper over C++ stringstream. This results in a few behaviors.
+
+- As both of these objects have streams which are append only in nature, by default they will grow without bound under repeated usage. That is, all the bytes a decoder has ever read or an encoder has ever written will continue to accumulate in memory even after the application has processed and discarded the result. This should be considered a memory leak.
+- Even when these objects explicitly shrink their streams to avoid this (via reset, flush, or compaction), the underlying capacity is not relinquished. As a result, the buffer is roughly the size of the largest amount of content it ever held at once, regardless of how long ago that was.
+  - This is useful for performance, as it means that the already allocated capacity can simply be reused when new content fills the buffer. This is faster than constantly trimming and re-allocating the entire thing, especially with frequently large buffers.
+  - However, it means that one overlarge outlier can pin that memory going forward even if the buffer never nears that capacity again.
+
+To deal with the first behavior, these objects support compaction of their buffers. Compaction consists of shrinking them by setting the contents of the buffer to remove all bytes which were already consumed. For a decoder, consumed bytes are bytes which were fully read past in the previous state. For an encoder, consumed bytes are bytes which were already output to the caller via their read method.   In both cases, any bytes which were not yet consumed remain in the buffer.  
+Compaction can be performed manually by calling `bool compact()` on these objects, or automatically by setting an auto-compact threshold when constructing them.
+
+The auto-compact threshold determines how many bytes must be consumed yet still in the buffer before automatic compaction is considered. If the number of consumed bytes exceeds both the threshold and the number of unconsumed bytes, the buffer will be compacted.  
+If the threshold is set to 0, automatic compaction is disabled.  
+Automatic compaction is performed during calls to `push()` and `get_value` on decoders, and calls to `read()` on encoders.
+
+Note that as compaction manipulates the buffer and its cursors (preserving everything after the read cursor and resetting it to 0 when the buffer is compacted) automatic compaction should not be used on an encoder if you intend to use any of the seek functions. The two will conflict and may lead to loss of data.
+
+To deal with the second behavior, all methods which can shrink or empty the buffer support taking one of two paths based on a global configurable threshold, `mp_buffer_release_threshold`.
+
+- If the amount of bytes to discard is under the threshold, the contents of the buffer are set directly, via `stream.str()`. This means that discarded content is gone from the buffer but the underlying maximum capacity does not change.
+- If the amount of bytes to discard is greater than both the threshold and the amount of data to keep in the buffer, the underlying stream is closed and re-opened with this data. This closes the underlying stringstream and thus frees its memory and starts with a new capacity. In some cases, the amount of data to keep in the buffer is empty, for reset or flush, so this will be done if the buffer has at least `mp_buffer_release_threshold` bytes in it.
+
+The default value for `mp_buffer_release_threshold` is `16 * (2 ** 20)` (16 MiB). In order to increase or decrease the threshold, simply assign a new threshold to this variable. It is reflected immediately in the next buffer release check.  
+A threshold of 0 will make the stream completely reset at every opportunity, which keeps total memory pinning down. This comes at the cost of slowing down writes which must grow the buffer again. This is similar to the behavior of version 0.9.0 of this library if compaction is also disabled.  
+A threshold which is very large will result in the content nearly always being reset via the first path, meaning that total memory consumption could theoretically grow up to that threshold and stay there unless the encoder or decoder is destroyed. This is more of a hazard when compaction is not used.
+
 ## mp_value
 Value objects are the basic unit of data in this library, allowing the storage and communication of the complete set of msgpack supported types. All deserialized data, and all data to be serialized, should ultimately be wrapped inside mp_value instances.  
 
@@ -181,7 +226,7 @@ If you wish to support serialization and deserialization of your own custom obje
 
 1. This may be wrapped as either the single-precision or double-precision format depending on the value passed in. If the double can safely be cast to a float with no loss of precision, it will be stored as one.
 2. Throws an exception if the string is longer than (2^32)-1 bytes, as that is the highest length that can be represented in msgpack. The function of the **is_bin** boolean is to decide whether it should be packed as msgpack's str or bin types. By default, all strings are packed as text, and should be valid UTF-8. If it should be treated as an opaque bytestring, pass true as the second argument.
-3. Throws an exception if the map or array has more than (2^32)-1 items. The passed in value should be a reference rather than a handle to avoid any passing of null. Note that it is possible to modify these objects after a value object wrapping them has been constructed, and this has the potential to change the format if the size has changed. Doing so up until the value has actually been passed to an encoder should be safe, as the value's format property will change to reflect any mutation it picks up. Do not rely on this behavior, however, as mutations may not actually reach the value. Instead, construct values as late as possible to avoid synchronization issues.
+3. Throws an exception if the map or array has more than (2^32)-1 items. The passed in value should be a reference rather than a handle to avoid any passing of null. Passing of the reference in this case results in a shallow copy being made, so further modifications to the original object which was wrapped is not reflected in the value. If you retrieve a handle back to the stored map or array, however, modification is possible, and the format property will change to reflect any modifications to the size. It is best if you save value wrapping to as late as possible to avoid synchronization issues.
 4. Throws an exception if the ext object's data is longer than (2^32)-1 bytes.
 5. Any numeric values passed in will be coerced to the smallest type capable of representing that number before encoding, to take up the smallest number of bytes. In addition, all positive numbers will be coerced to unsigned types before this takes place, leaving negative numbers to use the signed encodings alone. As such, the format of the resulting value objects depends on the actual number rather than the type that was passed in.
 
@@ -220,19 +265,19 @@ The specified type if possible. If not possible, `MP_TYPE_MISMATCH_EXCEPTION` wi
 1. This get method is used for both the str and bin types, as the function of these methods is based on the NVGT types they return. The value's type property will determine whether this should be treated as a text or binary string.
 2. The **allow_int_source** parameter determines whether integer types will be coerced to floating point types (true) or whether attempting to do so will throw the type mismatch exception (false). Especially in the case of getting to **float**, loss of precision concerns apply!
 3. All of these methods will function so long as the value is of type **MPT_INT**, automatic coercion is internally performed. This means that bits are copied directly and truncated or sign-extended as needed. In particular, this means that you are allowed to get an unsigned type to a signed type and vice versa, which can have undesirable behavior if done wrong! It is safe to get a signed or unsigned type to a larger signed type, and it is always safe to get a smaller type to a larger type if they are both the same signedness. Doing anything else runs the risk of producing unexpected values as a result of two's complement. If you are uncertain exactly what type the value was stored as and thus what conversions are safe, check the value's format property, which tells you exactly what binary representation the value uses, or check the signed property to determine its signedness alone if you intend to use a 64-bit return type.
-4. Any mutation performed on the resulting handle may propagate back to the value object it came from, including if this object is stored inside some container. As mentioned above, this may cause the format property in particular to change.
+4. Any mutation performed on the resulting handle will propagate back to the value object it came from, including if this object is stored inside some container. As mentioned above, this may cause the format property in particular to change.
 
 ### Properties
 #### type
 The type (format family) of this value expressed as a value from the **mp_type** enumeration.
 ```
-const int type;
+const mp_type type;
 ```
 
 #### format
 The format (specific representation) of this value expressed as a value from the **mp_format** enumeration.
 ```
-const int format;
+const mp_format format;
 ```
 
 #### signed
@@ -279,9 +324,9 @@ const string data;
 ### Supported Operations
 Ext objects support equality comparison (`==`) which compares by type and data.
 
-An ext object with the type code **MP_EXT_TIMESTAMP** can be cast to an **mp_timestamp** object.
+An ext object with the type code **MP_EXT_TIMESTAMP** can be cast to an **mp_timestamp** object. Note that doing this may throw a "msgpack invalid timestamp" exception if the payload is not a valid msgpack timestamp.
 
-An ext object with the type code **MP_EXT_VECTOR** can be converted to a **vector** object defined by NVGT, using the explicit conversion of the form `vector(ext)`.
+An ext object with the type code **MP_EXT_VECTOR** can be converted to a **vector** object defined by NVGT, using the explicit conversion of the form `vector(ext)`. When doing this, if the payload is not the correct length, the type mismatch exception will be thrown.
 A **vector** object can likewise be implicitly or explicitly converted to an ext object.  
 The serialization of vectors, which is a custom implementation by this library, is achieved by using the type code 86 (ASCII V), and a payload consisting of the three floats (in network byte order) written in the order x y z.
 
@@ -294,7 +339,7 @@ Warning: Due to the fact that NVGT's timestamp precision is microseconds, round-
 
 | Signature | Purpose |
 | --- | --- |
-| `mp_timestamp(mp_ext &in);` | Construct an **mp_timestamp** object from an ext object of the correct type and format. If the passed in ext object is not the correct type and format, the type mismatch exception will be thrown. This constructor is used for explicit conversions. |
+| `mp_timestamp(mp_ext &in);` | Construct an **mp_timestamp** object from an ext object of the correct type and format. If the passed in ext object is not the correct type, the type mismatch exception will be thrown. If the data is the wrong length or nanoseconds is out of range, an exception beginning with "msgpack invalid timestamp" will be thrown. This constructor is used for explicit conversions. |
 | `mp_timestamp(int64 seconds, uint nanoseconds);` | Construct an **mp_timestamp** object holding the specified timestamp, expressed in seconds since the epoch and nanoseconds since that second. Throws an exception beginning with "msgpack invalid timestamp" if nanoseconds is greater than 999999999. |
 | `mp_timestamp(int64 microseconds);` | Construct an **mp_timestamp** object from the provided number of microseconds, which like the NVGT timestamp expresses the number of microseconds since the Unix epoch. |
 | `mp_timestamp(timestamp&);` | Construct an **mp_timestamp** object based on the provided NVGT timestamp object. |
@@ -352,7 +397,7 @@ map@ submap;
 bool s = m.get("submap", @submap);
 ```
 
-In contrast, as with values, the set method requires a reference to the object in question rather than a handle, so no `@` decoration should be used on its argument. NVGT is capable of converting a handle into a reference, so if you are storing a variable containing one of these with the handle type, passing that variable to the set function should work with no issues, assuming this handle is not null.
+In contrast, as with values, the set method requires a reference to the object in question rather than a handle, so no `@` decoration should be used on its argument. NVGT is capable of converting a handle into a reference, so if you are storing a variable containing one of these with the handle type, passing that variable to the set function should work with no issues, assuming this handle is not null. Doing this makes a copy of the object passed, and further modifications to it after this point are not reflected in the map.
 
 Finally, the automatic get methods here will not perform the same string coercion as is done for keys, but require matching types, with the exception that (as with value conversion) you are allowed to get integers to floats, and any integer type can be gotten to any other. If the type does not match no exception will be thrown, the get method will simply return false, just as happens with dictionary.
 
@@ -494,12 +539,12 @@ Map objects support equality comparison (`==`), which compares recursively by co
 
 ## mp_decoder
 An mp_decoder object reads data from a msgpack stream and yields deserialized values obtained from that data in the form of value objects.  
-Note that decoding is a multi-step process due to the fact that msgpack streams can be formed of concatenated msgpack streams, as well as the nature of a streaming format where not all data may be available upon initialization of the decoder.
+Note that decoding is a multi-step process due to the fact that msgpack streams can be formed of concatenated msgpack values, as well as the nature of a streaming format where not all data may be available upon initialization of the decoder.
 
 ### Constructor
 Create a decoder ready for use, with optional initial data to pass right away.
 ```
-mp_decoder(string initial = "", bool fixed_length = false, bool strict_map_keys = true, uint max_recursion = 100);
+mp_decoder(string initial = "", bool fixed_length = false, bool strict_map_keys = true, uint max_recursion = 100, uint auto_compact_threshold = 0);
 ```
 
 #### Arguments
@@ -508,6 +553,7 @@ mp_decoder(string initial = "", bool fixed_length = false, bool strict_map_keys 
 - `bool fixed_length`: Whether the decoder should operate in fixed-length mode. Defaults to false.
 - `bool strict_map_keys`: Whether the decoder should further constrain all map keys to be of the str or bin types (strict key mode). Defaults to true.
 - `uint max_recursion`: The maximum recursion depth, the highest allowed level of nesting of arrays and maps. Defaults to 100.
+- `uint auto_compact_threshold`: A threshold in bytes after which the decoder will automatically compact its buffer to attempt to keep its size bounded without manual resets. If 0, the default, automatic compaction will not be used.
 
 #### Remarks
 In fixed-length mode, the decoder will assume that the provided initial data is the totality of the stream that should be decoded, and further pushing is disallowed. It will also automatically transition to the **MPDS_END_DATA** state upon reading the final value in the stream, even before `read_format()` is called.
@@ -519,6 +565,8 @@ Note that this collision can still occur in strict key mode if a key of type str
 The maximum recursion depth limits the number of recursive decoders created to handle reading arrays and maps, which may be arbitrarily nested according to msgpack. As these are handled by making use of recursion on the NVGT side, too much nesting could lead to dramatically increased memory usage, performance degradation, or the worst case, a stack overflow error in NVGT when recursive function calls go too deep. This limit allows you to bail out at a sane level of nesting before that happens, and the default of 100 should be more than anyone needs. You may set it even lower or higher for your own use cases and constraints.
 
 The maximum recursion level and strict key mode can only be set during object creation, meaning they are not valid arguments to the reset method. They are used for the lifetime of any decoder object. If you wish to operate under a different set of constraints, you will have to create another decoder object.
+
+See [Buffering and Compaction](#buffering-and-compaction) for details on compaction. Automatic compaction, if enabled, is performed in calls to `push()` and `get_value()`.
 
 ### Methods
 #### reset
@@ -535,10 +583,10 @@ void reset(string initial = "", bool fixed_length = false);
 ##### Remarks
 See constructor for the meanings of the arguments.
 
-Msgpack decoders internally make use of a datastream to handle the translation between bytes and representations the code can work with. All push calls simply append data to this internal buffer, but reading data from it does not cause it to be cycled out. Thus it is advised that you always call reset after you are finished working with a particular burst of streamed msgpack, which re-initializes the internal stream and thus empties this buffer. Failure to do so can result in a memory leak as the stream accumulates more and more data.  
+Msgpack decoders internally make use of a datastream to handle the translation between bytes and representations the code can work with. All push calls simply append data to this internal buffer, but reading data from it does not cause it to be cycled out, unless automatic compaction is enabled or you compact manually. If you are not using compaction, it is advised that you always call reset after you are finished working with a particular burst of streamed msgpack, which re-initializes the internal stream and thus empties this buffer. Failure to do so can result in a memory leak as the stream accumulates more and more data.  
 As part of re-initializing the internal stream and states, any values in the process of being decoded are thrown away and irrecoverable, including any recursive decoding for maps and arrays. After a call to reset, the decoder will always be in the state **MPDS_READY**, ready to begin anew.
 
-The maximum recursion depth and strict key mode are not altered by this method, and continue to hold the values passed during object creation.
+The maximum recursion depth, strict key mode, and auto-compact threshold are not altered by this method, and continue to hold the values passed during object creation.
 
 #### push
 Feed more data to the decoder.
@@ -562,6 +610,8 @@ As such, a return value of true does not guarantee that the next read will be ab
 If you are in the **MPDS_MORE_DATA** state and attempt a read, any of those methods will return **MPDS_INVALID_OPERATION** immediately, without changing the decoder's actual state. Once push returns true, reads may be continued as normal.
 
 Multiple calls to push *MUST* pass contiguous, non-overlapping segments of the same encoded msgpack stream or a concatenation of valid, self-contained msgpack streams. Failure to do so may result in a malformed stream and the decoder behaving improperly as a result.
+
+If automatic compaction is enabled and the decoder is not in fixed-length mode, the buffer may be compacted before the pushed data is written to it. This may periodically result in push calls taking slightly longer.
 
 #### get_state
 Returns the current state of the decoder.
@@ -589,6 +639,8 @@ This method should only be called when the decoder's state is **MPDS_READ**, at 
 
 In addition to yielding the current value, this method resets the decoder's state to **MPDS_READY**, prepared for a further read, with one exception. If the decoder is in fixed-length mode and no further bytes are available, the decoder's state is instead reset to **MPDS_END_DATA**, forbidding all further reads.
 
+If automatic compaction is enabled and the decoder is not in fixed-length mode, the buffer may be compacted, resulting in this call taking slightly longer.
+
 #### discard_value
 Throws away the last completely read value from the decoder and prepares it to read another.
 ```
@@ -599,7 +651,7 @@ bool discard_value();
 `bool`: True if there was indeed a value to discard, false otherwise.
 
 ##### Remarks
-This method functions very similarly to `get_value`, including its behavior in regards to the current state. It will return false if the current state is not **MPDS_READ**. It is basically equivalent to calling `get_value` with nowhere to actually store the value, thus throwing the handle away, but is more explicit about it.
+This method functions very similarly to `get_value`, including its behavior in regards to the current state and, if enabled, compaction. It will return false if the current state is not **MPDS_READ**. It is basically equivalent to calling `get_value` with nowhere to actually store the value, thus throwing the handle away, but is more explicit about it.
 
 #### try_read_value
 Attempt to read a value from a msgpack stream, working through all steps possible.
@@ -676,13 +728,34 @@ For the str, bin, and ext types, it reads a fixed number of bytes specified by t
 For the map and array types, which specify their sizes in terms of the number of items they contain, it will go into a recursive reading mode and attempt to read as many values as it can, until it either reads all of the container it was told to or runs out of data. This repeats each time more data is pushed and it is called again.
 This may result in the decoder seemingly being stuck in the **MPDS_CONTENT** state for many calls, alternating with **MPDS_MORE_DATA**. This is because any of the other states from the recursive decoder do not make it up to the root decoder to be visible to the caller, as that would break obvious logic of how the root decoder should be operated. Maps and arrays can also be nested arbitrarily.
 
-If the decoder encounters a map with a key of type map, array or ext, **MP_INVALID_KEY_TYPE_EXCEPTION** will be thrown, and it will transition to **MPDS_INVALID**.
+If the decoder encounters a map with a key of type map, array or ext, **MP_INVALID_KEY_TYPE_EXCEPTION** will be thrown.  
 If the decoder is in strict key mode, the same will happen for keys of the integer, float, boolean and nil types, as the only valid types in strict key mode are str and bin.  
-If the maximum recursion depth is exceeded, the exception **MP_RECURSION_LIMIT_EXCEPTION** will be thrown, and the decoder will transition to **MPDS_INVALID**.  
+If the maximum recursion depth is exceeded, the exception **MP_RECURSION_LIMIT_EXCEPTION** will be thrown.  
+If any exception is thrown during decoding, the decoder will transition to the state **MPDS_INVALID**.
 Should the recursive decoder ever end up in an invalid state, this will reach the root decoder and all of the container will be lost, no partial retrieval is possible.
 
 If the content has been read completely, the decoder will transition to **MPDS_READ** and the value may then be obtained, as there are no steps after this for any kind of value.
 Calling this method in any state other than **MPDS_CONTENT** will return **MPDS_INVALID_OPERATION** immediately.
+
+#### compact
+Attempts to manually compact the internal buffer.
+```
+bool compact();
+```
+
+##### Returns
+`bool`: Whether the buffer was compacted
+
+##### Remarks
+This function is used for manual compaction, and does not care if automatic compaction is enabled. The return value indicates whether the buffer actually changed.
+
+The buffer can only be compacted if the decoder is not in fixed-length mode and some number of consumed bytes remain. If the decoder is in fixed-length mode, the buffer is already empty, or no data has actually been consumed by the decoder's state machine, this function returns false immediately.
+
+### Properties
+Two properties exist to monitor the state of the buffer, useful for compaction.
+
+- `uint64 bytes_consumed`: The number of bytes in the decoder's buffer that have been fully consumed by calls to the `read_*` methods.
+- `uint64 bytes_buffered`: The total number of bytes in the decoder's buffer.
 
 ## mp_encoder
 An mp_encoder takes input values, in the form of mp_value objects, and serializes them into a msgpack stream.  
@@ -691,14 +764,15 @@ Note that unlike the decoder, the operation of an encoder is much simpler, due t
 ### Constructor
 Create an encoder ready for use, with optionally specified constraints.
 ```
-mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, bool leave_partial = false);
+mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, uint auto_compact_threshold = 0, bool leave_partial = false);
 ```
 
 #### Arguments
 
 - `bool strict_map_keys`: Whether the keys of maps should be constrained to the str and bin types (strict key mode). Defaults to true.
 - `uint max_recursion`: The maximum recursion depth, the highest allowed level of nesting of arrays and maps. Defaults to 100.
-- `bool leave_partial`: Whether partial data from a failed write should be left in the buffer or rolled back/. Defaults to false.
+- `uint auto_compact_threshold`: A threshold in bytes after which the encoder will automatically compact its buffer to attempt to keep its size bounded without manual resets. If 0, the default, automatic compaction will not be used.
+- `bool leave_partial`: Whether partial data from a failed write should be left in the buffer or rolled back. Defaults to false.
 
 #### Remarks
 If strict key mode is enabled (the default), the encoder will throw the invalid key exception if you attempt to encode a map with any key types other than str and bin. If it is disabled, the encoder will accept all types except those of array, map and ext for map keys.
@@ -706,10 +780,11 @@ If strict key mode is enabled (the default), the encoder will throw the invalid 
 The maximum recursion depth limits the number of recursive encode calls for arrays and maps, which may be arbitrarily nested according to msgpack. As these are handled by making use of recursion on the NVGT side, too much nesting could lead to dramatically increased memory usage, performance degradation, or the worst case, a stack overflow error in NVGT when recursive function calls go too deep. This limit allows you to bail out at a sane level of nesting before that happens, and the default of 100 should be more than anyone needs. You may set it even lower or higher for your own use cases and constraints.  
 For the case of encoding, the maximum recursion level is also a way to prevent an infinite loop, runaway memory usage, and stack overflow if a deliberate cycle is created in the data to be encoded, as the encoder does not keep track of all parent values it has encoded in the child calls. Msgpack data should always be acyclic, as the msgpack format defines no mechanism by which cycles could even be introduced much less represented.
 
-If leave partial is disabled, the data sitting in the buffer is rolled back by copying the buffer's state before this write and reinitializing it. This preserves your read and write cursors, but may result in a slight delay and brief spike in memory consumption.  
-It will not function if your buffer is near 2 GiB due to argument sizes in engine functions, and has the potential to throw an engine "Out of memory" exception if under significant memory pressure.
+See [Buffering and Compaction](#buffering-and-compaction) for details on compaction. Automatic compaction, if enabled, is performed in calls to `read()`.
 
-The maximum recursion level, strict key mode,  and rollback mode can only be set during object creation and are used for the lifetime of any encoder object. If you wish to operate under a different set of constraints, you will have to create another encoder object.
+If leave partial is disabled, the data sitting in the buffer is rolled back by copying the buffer's state before this write and reinitializing it. This preserves your read and write cursors, but may result in a slight delay and brief spike in memory consumption.
+
+The maximum recursion level, strict key mode,  auto-compact threshold, and rollback mode can only be set during object creation and are used for the lifetime of any encoder object. If you wish to operate under a different set of constraints, you will have to create another encoder object.
 
 ### Methods
 #### write_value
@@ -732,6 +807,10 @@ If strict key mode is enabled and a map is encountered with a key type other tha
 This method handles any recursion present in values that hold maps or arrays, but has no facilities for alleviating cycles. Any cycles will result in either a stack overflow or the recursion limit exceeded exception being thrown.
 
 If any exception is thrown from this or any of the other writing functions, the content of the internal stream depends on the leave partial flag. If it is true, the stream contents are undefined, and will likely contain partial data. Any fully written values from prior calls can be recovered, but especially in the case of recursion limit exceeded, recovery is likely unfeasible for the partial value written with this call. If it is false, the contents of the stream are restored to what they were before this write call.
+
+If the buffer contains 4 GiB or more of data and `leave_partial` is false, **MP_LARGE_BUFFER_EXCEPTION** is thrown immediately, and no write is attempted. This is because rollback would be impossible due to the inability to hold a buffer that large in a string to truncate the buffer. If you receive this exception, please read some data and compact the buffer before trying again.
+
+If **MP_OOM_EXCEPTION** is thrown from this function, no rollback is attempted, regardless of `leave_partial`. The buffer is in an undefined state and the encoder should be discarded.
 
 #### write
 Serialize a value to the stream, automatically guessing what type to serialize.
@@ -792,7 +871,11 @@ string read(uint count = 0);
 `string`: The data written to the internal stream of the requested size or lower, or the empty string if no more data is available.
 
 ##### Remarks
-This method maps directly to the read method on the internal datastream, and thus will behave exactly as that one does, with newly written data appearing at the end. It is provided, with the count included, for easy chunking, by merely reading in the requested chunk size.
+This method proxies to the read method on the internal datastream, and thus will behave similarly, with newly written data appearing at the end. It is provided, with the count included, for easy chunking, by merely reading in the requested chunk size.
+
+Unlike the normal datastream read method, the count is clamped to the maximum available number of bytes, so an overshooting or 0 count read will not put the stream in an EOF state or set the read position to -1.
+
+If automatic compaction is enabled the buffer may be compacted, resulting in this call taking slightly longer.
 
 #### flush
 Flushes all remaining data from the encoder's internal buffer and empties it.
@@ -804,7 +887,25 @@ string flush();
 `string`: Any remaining data in the internal buffer
 
 ##### Remarks
-This is not exactly the same as calling read(0), though it does that too and returns that. Instead, after doing that, it re-initializes the internal stream, so that its buffer is empty again. Just like with `mp_decoder.reset`, it is advised you do this after working with each stream burst, or else you may leak memory.
+This is not exactly the same as calling read(0), though it does that too and returns that. Instead, after doing that, it re-initializes the internal stream, so that its buffer is empty again. Just like with `mp_decoder.reset`, it is advised you either use automatic compaction or else call this after working with each stream burst, or else you may leak memory.
+
+If more than 4 GiB of data are waiting in the buffer, **MP_LARGE_BUFFER_EXCEPTION** will be thrown immediately, and the cursor will not be advanced. NVGT strings have a maximum length of 4 GiB. If this occurs, use successive calls to read first to get the buffer below that limit.
+
+#### compact
+Attempts to manually compact the internal buffer.
+```
+bool compact();
+```
+
+##### Returns
+`bool`: Whether the buffer was compacted
+
+##### Remarks
+This function is used for manual compaction, and does not care if automatic compaction is enabled. The return value indicates whether the buffer actually changed.
+
+The buffer can only be compacted if some number of already consumed bytes remain. If the buffer is already empty or no data has actually been consumed by calling `read()`, this function returns false immediately.
+
+If this function returns true, the head of the buffer is removed and the read cursor is set to the beginning of the buffer, which now corresponds to the beginning of unread data. Do not use this function or automatic compaction if you ever intend to seek the read cursor.
 
 #### Other Methods On The Underlying Stream
 In addition to read, these methods are defined which map directly to identical calls on the underlying stream, so see the datastream documentation for details on their usage.
@@ -814,15 +915,25 @@ In addition to read, these methods are defined which map directly to identical c
 - `bool rseek_relative(int64);`
 
 ### Properties
+#### Stream Properties
 The following properties are defined which map directly to the underlying stream of an encoder.
 
-- `uint64 available;`
-- `bool good;`
-- `bool bad;`
-- `bool fail;`
-- `bool eof;`
-- `int64 rpos;`
-- `int64 wpos;`
+- `uint64 available`
+- `bool good`
+- `bool bad`
+- `bool fail`
+- `int64 rpos`
+- `int64 wpos`
+
+#### Other Properties
+
+a `bool eof` property is also defined, but is semantically different than that of a datastream. A datastream only sets eof when you attempt to read past the end; it does not set it for reading directly up to the end. The `read()` and `flush()` functions clamp lengths to avoid reading past the end, so these never put the underlying stream in an eof state.  
+Instead, the `eof` property here is a shorthand for `available == 0`, i.e. all readable data has been exhausted.
+
+Two properties exist to monitor the state of the buffer, useful for compaction.
+
+- `uint64 bytes_consumed`: The number of bytes in the encoder's buffer that have been fully consumed by calls to `read()`. This is very similar to `rpos` except it returns 0 where `rpos` might return -1.
+- `uint64 bytes_buffered`: The total number of bytes in the encoder's buffer. This is equivalent to `bytes_consumed + available`.
 
 # Debug Mode
 The file debug.patch is provided to enable debug statements in the library when applied. Use `git apply debug.patch` to enable it and `git apply -R debug.patch` to disable it.
