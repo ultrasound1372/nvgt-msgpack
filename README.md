@@ -936,19 +936,13 @@ Two properties exist to monitor the state of the buffer, useful for compaction.
 - `uint64 bytes_buffered`: The total number of bytes in the encoder's buffer. This is equivalent to `bytes_consumed + available`.
 
 # Debug Mode
-The file debug.patch is provided to enable debug statements in the library when applied. Use `git apply debug.patch` to enable it and `git apply -R debug.patch` to disable it.
-This debug mode is designed for testing and development of the msgpack library itself, in order to test correctness, and should not be used for production code. It should not even be used for code in testing that makes use of the msgpack library, unless you believe you've found a bug in the library's behavior.
+The debug branch provides a debug copy of the library, which includes many internal traces writing to a file called "msgpack.log". This debug mode is designed for testing and development of the msgpack library itself, in order to test correctness, and should not be used for production code. It should not even be used while testing your own code which makes use of the msgpack library, unless you believe you've found a bug in the library's behavior.
+
+All debug writes can be disabled by setting the global constant `bool DEBUG` to false, but this simply makes the debug version of the library a bloated version of the non-debug library. This is best used when performing regression testing while resolving new merges from main.
 
 # Contributing
 If you spot any bugs in the library and/or documentation, or places where things could be improved, issues and pull requests are welcome.
 
-The formatting used here is an attempt to conform to NVGT's code style, which itself is sort of enforced by Artistic Style using a config that comes with the NVGT repository. The changes I make to that style are removal of excessive blank lines in the middle of methods, removal of padding of the angle brackets used to denote the templated array type, and removal of any spaces between the name and opening parenthesis of the throw function. This formatting is subject to change slightly if better methods are discovered, but tabs are still to be used for indentation.
+The formatting used here is an attempt to conform to NVGT's code style, which itself is sort of enforced by Artistic Style (v3.6.14) using a config copied from the NVGT repository. After astyle is run in project mode, the space between the name and opening parenthesis of the **throw** function is removed, as in Angelscript **throw** is a function not a keyword. This formatting is subject to change slightly if better methods are discovered, but tabs are still to be used for indentation.
 
-Any contribution must keep the file debug.patch able to be applied with it in order to be merged. If the pull request does not do so itself, I will attempt to do so.
-This means that the best way of working on the library is to put it into debug mode first and then make your changes on top of that, adding new debug statements as necessary, and finally before merging strip those debug statements and update the patch.
-
-The script debugstrip.py has been provided to aid with this once debug.patch no longer cleanly reverts, which will strip all lines containing dbgout and everything after the marker `/// BEGIN DEBUG ///`. The result of this should be diffed against the prior version to provide a new debug.patch, using a command similar to the following, assuming both are committed at least temporarily.
-```
-git diff --binary --histogram --output=debug.patch HEAD HEAD~
-```
-The resulting debug.patch should then be committed. Due to this noise in the history, if temporary branches are not used pull requests may be squash merged.
+Contributions should be based off of the main branch, not debug. Merges will only ever flow from main to debug, never the other way. If you wish your changes to contain new debug traces, you must contribute untraced ones to main first. After main is merged to debug, you may then make a contribution against debug separately to add them.
