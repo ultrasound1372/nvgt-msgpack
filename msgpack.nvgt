@@ -1640,7 +1640,7 @@ class mp_decoder {
 		stream.wseek_end(); // make sure to write at end! Docs say read starts at beginning, but say nothing about write, plus we had to turn off syncing later.
 		stream.rseek(0); // the docs are in fact wrong, this started at the end too!
 		this.state = MPDS_READY;
-		dbgout("Decoder created, initial data is " + initial.length() + " bytes" + (fixed_length ? " and will not grow" : ""));
+		dbgout(("Decoder created, initial data is %0 bytes" + (fixed_length ? " and will not grow" : "")+": strict map keys: %1, max recursion: %2, auto-compact threshold: %3").format(initial.length(), strict_map_keys, max_recursion, auto_compact_threshold));
 	}
 
 	// this constructor is to be called for sub-decoders, passing some values so stream is synchronized
@@ -1721,6 +1721,7 @@ class mp_decoder {
 		if (stream is null || fixed_length || nested) return false; // compacting is meaningless in these states
 		if (stream.available == 0) { // completely drained, nothing needs to be copied
 			if (stream.rpos == 0) return false; // it wasn't just drained it was blank
+			dbgout("compacting drained buffer");
 			reseed(bytes_consumed, "");
 			return true;
 		}
@@ -1729,6 +1730,7 @@ class mp_decoder {
 		uint64 prev_consumed = bytes_consumed; // need this to pass to reseed, but the read will clobber it
 		if (available > MP_UINT_MAX) return false;
 		const string unconsumed = stream.read(available); // everything that hasn't been consumed yet
+		dbgout("compacting buffer");
 		reseed(prev_consumed, unconsumed);
 		return true;
 	}
@@ -1736,15 +1738,22 @@ class mp_decoder {
 	// automatically compact during churn if a threshold was specified
 	protected void auto_compact() {
 		uint64 consumed = bytes_consumed;
-		if (consumed >= auto_compact_threshold && consumed >= stream.available) compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+		if (consumed >= auto_compact_threshold && consumed >= stream.available) {
+			bool s = compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+			dbgout("auto-compact triggered, result "+s);
+		}
 	}
 
 	// helper to reseed the buffer based on the global release threshold
 	protected void reseed(uint64 discarded, const string &in seed) {
+		dbgout("reseed buffer: discard "+discarded+" bytes"+(seed.length() > 0 ? ", seed "+seed.length()+" bytes" : ""));
 		if (discarded >= mp_buffer_release_threshold && discarded > seed.length()) {
 			stream.open(seed, "", STREAM_BYTE_ORDER_NETWORK); // open internally closes first if already open. Old allocation is freed
-		} else
+			dbgout("stream reopened");
+		} else {
 			stream.str(seed);
+			dbgout("stream contents set");
+		}
 		stream.rseek(0); // clears EOF and fixes available
 		stream.wseek_end(); // writes always append
 	}
@@ -2355,7 +2364,7 @@ class mp_encoder {
 		this.leave_partial = leave_partial;
 		@this.stream = datastream("", "", STREAM_BYTE_ORDER_NETWORK);
 		this.stream.sync_rw_cursors = false;
-		dbgout("encoder created");
+		dbgout("encoder created: strict map keys: %0, max recursion: %1, auto-compact threshold: %2, leave partial: %3".format(strict_map_keys, max_recursion, auto_compact_threshold, leave_partial));
 	}
 
 	~mp_encoder() {
@@ -2653,6 +2662,7 @@ class mp_encoder {
 		uint64 read_before = bytes_consumed; // wrap possible -1 from EOF
 		uint64 unread_before = stream.available;
 		if (!leave_partial && (read_before + unread_before) > MP_UINT_MAX) {
+			dbgout("write_value may try to roll back "+(read_before+unread_before)+" byte buffer");
 			throw(MP_LARGE_BUFFER_EXCEPTION);
 			return;
 		}
@@ -2701,6 +2711,7 @@ class mp_encoder {
 	bool compact() {
 		if (stream.available == 0) { // completely drained, nothing needs to be copied
 			if (stream.rpos == 0) return false; // it wasn't just drained it was blank
+			dbgout("compacting drained buffer");
 			reseed(bytes_consumed, "");
 			return true;
 		}
@@ -2709,6 +2720,7 @@ class mp_encoder {
 		uint64 prev_consumed = bytes_consumed; // need this to pass to reseed, but the read will clobber it
 		if (available > MP_UINT_MAX) return false;
 		const string unconsumed = stream.read(available); // everything that hasn't been consumed yet
+		dbgout("compacting buffer");
 		reseed(prev_consumed, unconsumed);
 		return true;
 	}
@@ -2716,15 +2728,22 @@ class mp_encoder {
 	// automatically compact during churn if a threshold was specified
 	protected void auto_compact() {
 		uint64 consumed = bytes_consumed;
-		if (consumed >= auto_compact_threshold && consumed >= stream.available) compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+		if (consumed >= auto_compact_threshold && consumed >= stream.available) {
+			bool s = compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+			dbgout("auto-compact triggered, result "+s);
+		}
 	}
 
 	// helper to reseed the buffer based on the global release threshold
 	protected void reseed(uint64 discarded, const string &in seed) {
+		dbgout("reseed buffer: discard "+discarded+" bytes"+(seed.length() > 0 ? ", seed "+seed.length()+" bytes" : ""));
 		if (discarded >= mp_buffer_release_threshold && discarded > seed.length()) {
 			stream.open(seed, "", STREAM_BYTE_ORDER_NETWORK); // open internally closes first if already open. Old allocation is freed
-		} else
+			dbgout("stream reopened");
+		} else {
 			stream.str(seed);
+			dbgout("stream contents set");
+		}
 		stream.rseek(0); // clears EOF and fixes available
 		stream.wseek_end(); // writes always append
 	}
@@ -2781,6 +2800,7 @@ class mp_encoder {
 	string flush() {
 		uint64 available = stream.available;
 		if (available > MP_UINT_MAX) {
+			dbgout("flush encountered "+available+" byte buffer");
 			throw(MP_LARGE_BUFFER_EXCEPTION);
 			return "";
 		}
@@ -2998,8 +3018,8 @@ mp_value@[]@ mp_loads_chain(const string &in data, bool strict_map_keys = true, 
 				dbgout("loads_chain got value, now have " + ret.length() + " to return");
 			} else {
 				dbgout("loads_chain got non-read state");
+				break;
 			}
-			break;
 		} catch {
 			dbgout("loads_chain got exception " + get_exception_info());
 			break;
