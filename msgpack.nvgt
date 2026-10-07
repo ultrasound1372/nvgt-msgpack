@@ -44,6 +44,17 @@ const string MP_INVALID_KEY_TYPE_EXCEPTION = "msgpack invalid key type";
 const string MP_RECURSION_LIMIT_EXCEPTION = "msgpack maximum recursion depth exceeded";
 const string MP_LARGE_VALUE_EXCEPTION = "msgpack value too large";
 const string MP_OOM_EXCEPTION = "msgpack out of memory";
+const string MP_LARGE_BUFFER_EXCEPTION = "msgpack buffer too large to represent (4 GiB string limit)";
+
+/* buffer release threshold
+ * determines the threshold at which a buffer is completely freed during reset, flush, or compaction
+ * by default, these operations empty or shrink the contents of the buffer but do not change its allocated capacity
+ * above this threshold, however, the buffer will be completely freed and reinitialized, freeing that allocated memory
+ * most useful if you do not wish one huge value to keep that much memory allocated long after it's gone
+ * setting to 0 or a small value causes the buffer to be reinitialized constantly, which can hurt churn performance
+ * setting to a huge value causes the maximal capacity of the buffer to grow with the largest slice of data it ever contained
+*/
+uint64 mp_buffer_release_threshold = 16 * (2 ** 20); // 16 MiB
 
 /* detailed format enumeration
  * values in this enum are taken from the starting byte of each format, or the lowest such if a range is possible due to bitfields
@@ -193,6 +204,18 @@ const int[][] mp_prepare_infomap() {
 		tinfomap[i] = {MPF_NEG_FIXINT, MPT_INT, MPCT_VALUE, MPC_SUBFIELD};
 	}
 	return tinfomap;
+}
+
+// quick literal for comparing against uint_max, since strings cap out there
+const uint64 MP_UINT_MAX = 0xFFFFFFFF; // cap stream to string interchange at this size
+
+// wrap any outgoing exceptions the library generates
+string mp_wrap_exception(const string &in exc) {
+	if (exc.starts_with("msgpack")) return exc;
+	else if (exc == "Too large array size") return MP_LARGE_VALUE_EXCEPTION;
+	else if (exc == "Out of memory") return MP_OOM_EXCEPTION;
+	else if (exc.lower().find("alloc") > -1) return MP_OOM_EXCEPTION;
+	else return "msgpack internal error: " + exc;
 }
 
 // class for all values read from the stream, to be stored in maps and arrays
@@ -1574,19 +1597,20 @@ class mp_decoder {
 	protected mp_decoder_state state = MPDS_READY, prev_state = MPDS_MORE_DATA; // prev_state is for when you run out of bytes and then add some more
 	protected mp_value@ cur_value = null;
 	protected mp_decoder@ sub_decoder = null; // reference to the decoder contained by this one
-	protected uint max_recursion = 100;
+	protected uint max_recursion = 100, auto_compact_threshold = 0;
 	protected bool strict_map_keys = false; // enforce an even stricter constraint on map keys, they must be str or bin.
 
-	mp_decoder(const string &in initial = "", bool fixed_length = false, bool strict_map_keys = true, uint max_recursion = 100) {
+	mp_decoder(const string &in initial = "", bool fixed_length = false, bool strict_map_keys = true, uint max_recursion = 100, uint auto_compact_threshold = 0) {
 		this.recursion_level = 0;
+		this.fixed_length = fixed_length;
 		this.max_recursion = max_recursion;
 		this.strict_map_keys = strict_map_keys;
+		this.auto_compact_threshold = auto_compact_threshold;
 		@this.stream = datastream(initial, "", STREAM_BYTE_ORDER_NETWORK);
 		stream.sync_rw_cursors = false;
 		stream.wseek_end(); // make sure to write at end! Docs say read starts at beginning, but say nothing about write, plus we had to turn off syncing later.
 		stream.rseek(0); // the docs are in fact wrong, this started at the end too!
 		this.state = MPDS_READY;
-		this.fixed_length = fixed_length;
 	}
 
 	// this constructor is to be called for sub-decoders, passing some values so stream is synchronized
@@ -1634,9 +1658,7 @@ class mp_decoder {
 		}
 		this.reset_currents();
 		if (!nested) { // do not re-initialize a sub-decoder that is being detached!
-			stream.str(initial);
-			stream.rseek(0); // ensure cursor is at beginning, and clear any waiting eof flags
-			stream.wseek_end();
+			reseed(bytes_buffered, initial);
 			this.state = MPDS_READY;
 			this.prev_state = MPDS_MORE_DATA;
 			this.fixed_length = fixed_length;
@@ -1649,11 +1671,56 @@ class mp_decoder {
 		}
 	}
 
+	// for compaction
+	uint64 get_bytes_consumed() const property {
+		return (stream !is null && stream.good ? stream.rpos : 0);
+	}
+
+	uint64 get_bytes_buffered() const property {
+		return (stream !is null ? bytes_consumed + stream.available : 0);
+	}
+
+	// compact the stream's buffer by trimming everything already consumed off the front
+	// this is done by copying the unconsumed tail and replacing the stream's buffer with it alone
+	// this is safe between read_* calls, as each of them either consumes the bytes if enough are present or leaves the cursor unmoved waiting for them
+	bool compact() {
+		if (stream is null || fixed_length || nested) return false; // compacting is meaningless in these states
+		if (stream.available == 0) { // completely drained, nothing needs to be copied
+			if (stream.rpos == 0) return false; // it wasn't just drained it was blank
+			reseed(bytes_consumed, "");
+			return true;
+		}
+		if (bytes_consumed == 0) return false; // not EOF but nothing to compact
+		uint64 available = stream.available;
+		uint64 prev_consumed = bytes_consumed; // need this to pass to reseed, but the read will clobber it
+		if (available > MP_UINT_MAX) return false;
+		const string unconsumed = stream.read(available); // everything that hasn't been consumed yet
+		reseed(prev_consumed, unconsumed);
+		return true;
+	}
+
+	// automatically compact during churn if a threshold was specified
+	protected void auto_compact() {
+		uint64 consumed = bytes_consumed;
+		if (consumed >= auto_compact_threshold && consumed >= stream.available) compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+	}
+
+	// helper to reseed the buffer based on the global release threshold
+	protected void reseed(uint64 discarded, const string &in seed) {
+		if (discarded >= mp_buffer_release_threshold && discarded > seed.length()) {
+			stream.open(seed, "", STREAM_BYTE_ORDER_NETWORK); // open internally closes first if already open. Old allocation is freed
+		} else
+			stream.str(seed);
+		stream.rseek(0); // clears EOF and fixes available
+		stream.wseek_end(); // writes always append
+	}
+
 	// feed more data to the decoder
 	// not a valid operation if fixed_length was set!
 	bool push(const string &in data) {
 		if (fixed_length) return false; // if you tell me you provided all the data to begin with, don't go lying to me now
 		if (data.empty()) return state != MPDS_MORE_DATA && state != MPDS_END_DATA;
+		if (auto_compact_threshold > 0) auto_compact(); // new data, maybe we can drop some old data if the user gave a threshold
 		stream.write(data);
 		stream.rseek(stream.rpos); // hack to make available report the true number of bytes available after pushing
 		bool s = this.check_more_data_resolved();
@@ -1737,6 +1804,7 @@ class mp_decoder {
 		reset_currents();
 		if (fixed_length && !nested && stream.available == 0) set_state(MPDS_END_DATA); // last value in the stream
 		else set_state(MPDS_READY); // prepare to read the next one
+		if (auto_compact_threshold > 0 && !fixed_length && !nested) auto_compact(); // potentially drop data which is now used up, instead of waiting for a push
 		return ret;
 	}
 
@@ -1749,6 +1817,7 @@ class mp_decoder {
 			reset_currents();
 			if (fixed_length && !nested && stream.available == 0) set_state(MPDS_END_DATA); // last value in the stream
 			else set_state(MPDS_READY); // prepare to read the next one
+			if (auto_compact_threshold > 0 && !fixed_length && !nested) auto_compact(); // potentially drop data which is now used up, instead of waiting for a push
 			return true;
 		}
 		return false;
@@ -2002,7 +2071,7 @@ class mp_decoder {
 				// set state to invalid and rethrow, so that the entire stack of decoders becomes invalid.
 				string exc = get_exception_info();
 				set_state(MPDS_INVALID);
-				throw(wrap_exception(exc));
+				throw(mp_wrap_exception(exc));
 				return MPDS_INVALID;
 			}
 		} else if (cur_count_type == MPCT_ITEMS2X) {
@@ -2029,7 +2098,7 @@ class mp_decoder {
 				// set state to invalid and rethrow, so that the entire stack of decoders becomes invalid.
 				const string exc = get_exception_info();
 				set_state(MPDS_INVALID);
-				throw(wrap_exception(exc));
+				throw(mp_wrap_exception(exc));
 			}
 		} else {
 			set_state(MPDS_INVALID); // what state have you gotten me in, anyway?
@@ -2179,23 +2248,18 @@ class mp_decoder {
 		return MPDS_INVALID_OPERATION;
 	} // subdecoder_iterate_read
 
-	private string wrap_exception(const string &in exc) {
-		if (exc.starts_with("msgpack")) return exc;
-		else if (exc == "Too large array size") return MP_LARGE_VALUE_EXCEPTION;
-		else if (exc == "Out of memory") return MP_OOM_EXCEPTION;
-		else return "msgpack internal error: " + exc;
-	}
 }
 
 // msgpack encoder, writing values to a datastream
 class mp_encoder {
 	protected datastream@ stream;
-	protected uint max_recursion = 100;
+	protected uint max_recursion = 100, auto_compact_threshold = 0;
 	protected bool strict_map_keys = false, leave_partial = false;
 
-	mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, bool leave_partial = false) {
+	mp_encoder(bool strict_map_keys = true, uint max_recursion = 100, uint auto_compact_threshold = 0, bool leave_partial = false) {
 		this.max_recursion = max_recursion;
 		this.strict_map_keys = strict_map_keys;
+		this.auto_compact_threshold = auto_compact_threshold;
 		this.leave_partial = leave_partial;
 		@this.stream = datastream("", "", STREAM_BYTE_ORDER_NETWORK);
 		this.stream.sync_rw_cursors = false;
@@ -2476,27 +2540,89 @@ class mp_encoder {
 	// public-facing method, deligates to the private one so caller can't fudge recursion level and also for rollback
 	void write_value(mp_value@ v, bool sort_map_keys = false) {
 		// stored positions should rollback be needed
-		int64 read_before = stream.rpos; // may be -1
+		uint64 read_before = bytes_consumed; // wrap possible -1 from EOF
 		uint64 unread_before = stream.available;
+		if (!leave_partial && (read_before + unread_before) > MP_UINT_MAX) {
+			throw(MP_LARGE_BUFFER_EXCEPTION);
+			return;
+		}
 		try {
-			encode_value(v, sort_map_keys, 0);
-			stream.rseek(stream.rpos); // fix available
+			try {
+				encode_value(v, sort_map_keys, 0);
+				stream.rseek(stream.rpos); // fix available
+			} catch {
+				const string exc = get_exception_info();
+				if (!leave_partial && mp_wrap_exception(exc) != "msgpack out of memory") {
+					// roll back to previous state
+					uint64 size_before = read_before + unread_before; // All the way up to the last byte before this write. Sum was already confirmed to be safe when narrowed
+					string temp;
+					if (size_before > 0) {
+						// don't read(0), just leave it defaulting to empty
+						stream.rseek(0);
+						temp = stream.read(size_before);
+					}
+					stream.str(temp);
+					// breaks above 4 GiB due to such strings not being representable, and the copy may potentially throw "Out of memory" under extreme buffering
+					stream.rseek(read_before); // put the read cursor where it was before and fix available
+					stream.wseek_end(); // writes still need to append
+				} else stream.rseek(stream.rpos); // available also needs to be fixed here
+				throw(exc);
+			}
 		} catch {
-			const string exc = get_exception_info();
-			if (!leave_partial) {
-				// roll back to previous state
-				const uint64 real_read_before = (read_before > 0 ? uint64(read_before) : 0);
-				stream.str(stream.str().substr(0, int(real_read_before + unread_before))); // all the way up to the last byte before this write.
-				// breaks above 2 GiB due to substr taking an int, and the copy may potentially throw "Out of memory" under extreme buffering
-				stream.rseek(real_read_before); // put the read cursor where it was before and fix available
-				stream.wseek_end(); // writes still need to append
-			} else stream.rseek(stream.rpos); // available also needs to be fixed here
-			throw(exc);
+			throw(mp_wrap_exception(get_exception_info()));
 		}
 	}
 
+	// for compaction
+	uint64 get_bytes_consumed() const property {
+		return (stream !is null && stream.good ? stream.rpos : 0);
+	}
+
+	uint64 get_bytes_buffered() const property {
+		return (stream !is null ? bytes_consumed + stream.available : 0);
+	}
+
+	// compact the stream's buffer by trimming everything already consumed off the front
+	// this is done by copying the unconsumed tail and replacing the stream's buffer with it alone
+	// this is safe between write and read calls, though it will still leave partial data from a failed write if that was enabled
+	// if compaction is used, do not use the exposed datastream seek and cursor methods, as it assumes that the cursor only ever moves forward
+	bool compact() {
+		if (stream.available == 0) { // completely drained, nothing needs to be copied
+			if (stream.rpos == 0) return false; // it wasn't just drained it was blank
+			reseed(bytes_consumed, "");
+			return true;
+		}
+		if (bytes_consumed == 0) return false; // not EOF but nothing to compact
+		uint64 available = stream.available;
+		uint64 prev_consumed = bytes_consumed; // need this to pass to reseed, but the read will clobber it
+		if (available > MP_UINT_MAX) return false;
+		const string unconsumed = stream.read(available); // everything that hasn't been consumed yet
+		reseed(prev_consumed, unconsumed);
+		return true;
+	}
+
+	// automatically compact during churn if a threshold was specified
+	protected void auto_compact() {
+		uint64 consumed = bytes_consumed;
+		if (consumed >= auto_compact_threshold && consumed >= stream.available) compact(); // allows just up to twice threshold bytes to be in the buffer, to avoid eagerly compacting the instant it's crossed.
+	}
+
+	// helper to reseed the buffer based on the global release threshold
+	protected void reseed(uint64 discarded, const string &in seed) {
+		if (discarded >= mp_buffer_release_threshold && discarded > seed.length()) {
+			stream.open(seed, "", STREAM_BYTE_ORDER_NETWORK); // open internally closes first if already open. Old allocation is freed
+		} else
+			stream.str(seed);
+		stream.rseek(0); // clears EOF and fixes available
+		stream.wseek_end(); // writes always append
+	}
+
 	string read(uint count = 0) {
-		return this.stream.read(count);
+		const uint64 available = stream.available;
+		if (count == 0 || count > available) count = (available > MP_UINT_MAX ? MP_UINT_MAX : available);
+		const string ret = (count > 0 ? stream.read(count) : "");
+		if (auto_compact_threshold > 0) auto_compact();
+		return ret;
 	}
 
 	bool rseek(uint64 pos) {
@@ -2529,7 +2655,7 @@ class mp_encoder {
 	}
 
 	bool get_eof() const property {
-		return this.stream.eof;
+		return this.stream.available == 0;
 	}
 
 	int64 get_rpos() const property {
@@ -2541,9 +2667,13 @@ class mp_encoder {
 	}
 
 	string flush() {
-		const string ret = this.stream.read();
-		this.stream.str(""); // clear its contents
-		this.stream.rseek(0); // helps ensure state is fully initialized
+		uint64 available = stream.available;
+		if (available > MP_UINT_MAX) {
+			throw(MP_LARGE_BUFFER_EXCEPTION);
+			return "";
+		}
+		const string ret = (available == 0 ? "" : this.stream.read(available));
+		reseed(bytes_consumed, "");
 		return ret;
 	}
 
@@ -2706,14 +2836,14 @@ class mp_encoder {
 
 // dumps, dump a value to a string and return it immediately
 const string mp_dumps(mp_value@ v, bool sort_map_keys = false, bool strict_map_keys = true, uint max_recursion = 100) {
-	mp_encoder enc(strict_map_keys, max_recursion, true);
+	mp_encoder enc(strict_map_keys, max_recursion, 0, true);
 	enc.write_value(v, sort_map_keys);
 	return enc.flush();
 }
 
 // dumps_chain, dump a chain (array) of values to a string and return it immediately. Array is not serialized as array.
 const string mp_dumps_chain(mp_value@[]& v, bool sort_map_keys = false, bool strict_map_keys = true, uint max_recursion = 100) {
-	mp_encoder enc(strict_map_keys, max_recursion, true);
+	mp_encoder enc(strict_map_keys, max_recursion, 0, true);
 	for (uint i = 0; i < v.length(); i++)
 		enc.write_value(v[i], sort_map_keys);
 	return enc.flush();
