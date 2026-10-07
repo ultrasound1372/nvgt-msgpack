@@ -1,8 +1,11 @@
 # nvgt-msgpack (a fully spec-compliant MessagePack serializer and deserializer in NVGT)
 This repository contains a fully-featured MessagePack serializer and deserializer in pure NVGT, based on [version 2 of the MessagePack specification](https://github.com/msgpack/msgpack/blob/9aa092d6ca81f12005bd7dcbeb6488ad319e5133/spec.md). It is designed to be simply included into your code and used as a library.
 
+This library requires a version of NVGT which possesses the `void datastream.str(const string &in);` method, added in commit 71133f2. Relatively recent builds of 0.9.0 or higher should be sufficient.
+
 ## What is MessagePack?
-MessagePack (henceforth referred to as msgpack) is a fast, efficient streamed binary format for data interchange, built on similar principles as JSON. That is, it does not have real need of a schema, and allows the communication of arbitrary structured data in a way that makes sense for programs, while boasting a compact representation for such a format. As it is binary it is obviously not designed to be human-readable or edited by humans, so it can focus on that compactness, while at its core being almost directly translatable from and to JSON. See [its website](https://msgpack.org) for more details.  
+MessagePack (henceforth referred to as msgpack) is a fast, efficient streamed binary format for data interchange, built on similar principles as JSON. That is, it does not have real need of a schema, and allows the communication of arbitrary structured data in a way that makes sense for programs, while boasting a compact representation for such a format. As it is binary it is obviously not designed to be human-readable or edited by humans, so it can focus on that compactness, while at its core being almost directly translatable from and to JSON. See [its website](https://msgpack.org) for more details.
+
 Like many binary formats, msgpack is a streaming format which allows you to decode data as it arrives, without having to receive the entire stream beforehand. A msgpack stream is made up of a chain of msgpack values, encoded as a particular format as defined by the specification, concatenated end-to-end. There is no real start of stream or end of stream indicator, any number of contiguous valid msgpack values is a valid msgpack stream. Receiving partial data is absolutely possible, but there will be no ambiguity as to whether the data is complete or not.
 
 # Usage
@@ -53,6 +56,8 @@ This enumeration stores all possible states of an **mp_decoder**, as returned by
 
 # Constants
 The following public constants are a defined part of this API.
+
+- `string MP_VERSION`: The version of the msgpack library in use.
 
 ## Exceptions
 These string constants are used in throw statements for common cases, making the job of exception checking slightly easier on the caller. Note, however, that not all exception scenarios are covered by these constants, some exceptions are only thrown in one possible case and thus are not defined here.
