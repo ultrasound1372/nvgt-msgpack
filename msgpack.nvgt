@@ -18,6 +18,8 @@
  *  3. This notice may not be removed or altered from any source distribution.
 */
 
+const string MP_VERSION = "1.0.0";
+
 /* type enumeration
  * the generic type of each value, also called a format family
  * maps to families of formats and corresponding primitive types, depending on range of values
